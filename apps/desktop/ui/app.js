@@ -193,7 +193,7 @@ function appendMessage(m, scroll = true) {
   const box = $("messages");
   const row = document.createElement("div");
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
-  const pending = m.status === "pending" || m.status === "queued_firebase" || m.status === "queued_local";
+  const pending = m.status === "pending" || m.status === "queued_local";
   row.innerHTML = `
     <div>
       <div class="bubble">${escapeHtml(m.body)}</div>
@@ -350,7 +350,7 @@ $("btn-connect").onclick = async () => {
         const c = snapshot.contacts.find(x => x.user_id === activeContactId);
         if (c) await selectContact(c.user_id, c.display_name, c.avatar_data_url);
       } else {
-        alert("Не удалось автоподключиться. Проверьте, что собеседник онлайн.");
+        alert("Не удалось автоподключиться за 2 мин. Сообщения через offline mailbox работают без подключения.");
       }
     } else {
       const result = await invoke("connect_offer", { contactId: activeContactId });
@@ -455,5 +455,15 @@ listen("message-received", (e) => {
   if (e.payload.contact_id === activeContactId) appendMessage(e.payload);
 });
 listen("message-sent", async () => { await refresh(); });
+listen("contacts-updated", async () => {
+  await refresh();
+  if (activeContactId) {
+    const c = snapshot?.contacts.find(x => x.user_id === activeContactId);
+    if (c) {
+      setAvatarEl($("chat-avatar"), c.display_name, c.avatar_data_url);
+      renderContacts();
+    }
+  }
+});
 
 refresh();

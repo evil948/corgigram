@@ -102,7 +102,19 @@ impl CorgigramApp {
             pending_offer: Arc::new(Mutex::new(None)),
         };
         app.load_identity()?;
+        app.reconcile_stale_outbox()?;
         Ok(app)
+    }
+
+    /// Legacy outbox entries from before mailbox ack fix — treat as sent.
+    fn reconcile_stale_outbox(&self) -> Result<()> {
+        for item in self.storage.list_outbox(None)? {
+            if item.status == "queued_firebase" {
+                self.storage.update_message_status(&item.id, "sent")?;
+                self.storage.delete_outbox(&item.id)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn update_config(&mut self, config: AppConfig) -> Result<()> {
@@ -539,8 +551,7 @@ impl CorgigramApp {
             return Ok(sent);
         }
 
-        self.queue_offline(contact_id, text, &record).await?;
-        Ok(record)
+        self.queue_offline(contact_id, text, &record).await
     }
 
     async fn try_send_live(
@@ -575,7 +586,7 @@ impl CorgigramApp {
         Ok(Some(record))
     }
 
-    async fn queue_offline(&self, contact_id: &str, text: &str, record: &MessageRecord) -> Result<()> {
+    async fn queue_offline(&self, contact_id: &str, text: &str, record: &MessageRecord) -> Result<MessageRecord> {
         let identity = self.identity.as_ref().context("no identity")?.clone();
         let contact = self
             .storage
@@ -589,21 +600,35 @@ impl CorgigramApp {
             self.firebase()?
                 .publish_mailbox(contact_id, &record.id, &me, &ciphertext)
                 .await?;
+            let sent = MessageRecord {
+                id: record.id.clone(),
+                contact_id: contact_id.to_string(),
+                direction: "out".into(),
+                body: text.to_string(),
+                status: "sent".into(),
+                created_at: record.created_at,
+            };
+            self.storage.upsert_message(&sent)?;
+            return Ok(sent);
         }
 
         self.storage.insert_outbox(&OutboxRecord {
             id: record.id.clone(),
             contact_id: contact_id.to_string(),
             body: text.to_string(),
-            status: if self.config.firebase_configured() {
-                "queued_firebase".into()
-            } else {
-                "queued_local".into()
-            },
+            status: "queued_local".into(),
             created_at: record.created_at,
         })?;
-        self.storage.insert_message(record)?;
-        Ok(())
+        let queued = MessageRecord {
+            id: record.id.clone(),
+            contact_id: contact_id.to_string(),
+            direction: "out".into(),
+            body: text.to_string(),
+            status: "queued_local".into(),
+            created_at: record.created_at,
+        };
+        self.storage.upsert_message(&queued)?;
+        Ok(queued)
     }
 
     pub async fn sync_mailbox(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {

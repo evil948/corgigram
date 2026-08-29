@@ -280,10 +280,13 @@ pub fn run() {
                 let _ = app.sync_avatar_downloads().await;
             });
             let avatar_poll = poll_app.clone();
+            let avatar_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(45)).await;
-                    let _ = avatar_poll.read().await.sync_avatar_downloads().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    let app = avatar_poll.read().await;
+                    let _ = app.sync_avatars().await;
+                    let _ = avatar_handle.emit("contacts-updated", ());
                 }
             });
             let poll_handle = app.handle().clone();
@@ -294,6 +297,7 @@ pub fn run() {
                     for msg in incoming {
                         let _ = poll_handle.emit("message-received", &msg);
                     }
+                    let _ = poll_handle.emit("contacts-updated", ());
                 }
             });
             Ok(())

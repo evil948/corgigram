@@ -178,6 +178,35 @@ impl Storage {
         Ok(())
     }
 
+    pub fn upsert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO messages(id, contact_id, direction, body, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               body = excluded.body,
+               status = excluded.status",
+            params![
+                message.id,
+                message.contact_id,
+                message.direction,
+                message.body,
+                message.status,
+                message.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_message_status(&self, id: &str, status: &str) -> Result<(), StorageError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(())
+    }
+
     pub fn list_messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>, StorageError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(

@@ -56,7 +56,7 @@ impl PeerConnection {
     }
 
     pub async fn wait_ready(&self) -> Result<()> {
-        for _ in 0..150 {
+        for _ in 0..450 {
             if self.data_channel.lock().await.is_some() {
                 wait_until_connected(&self.pc).await?;
                 return Ok(());
@@ -264,7 +264,7 @@ async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>) -> Result<()> {
 }
 
 async fn wait_until_connected(pc: &Arc<RTCPeerConnection>) -> Result<()> {
-    for _ in 0..150 {
+    for _ in 0..450 {
         match pc.connection_state() {
             RTCPeerConnectionState::Connected => return Ok(()),
             RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {

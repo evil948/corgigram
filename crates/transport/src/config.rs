@@ -22,6 +22,7 @@ impl Default for IceConfig {
                 "turn:openrelay.metered.ca:80".into(),
                 "turn:openrelay.metered.ca:443".into(),
                 "turn:openrelay.metered.ca:443?transport=tcp".into(),
+                "turns:openrelay.metered.ca:443".into(),
             ],
             turn_username: Some("openrelayproject".into()),
             turn_credential: Some("openrelayproject".into()),

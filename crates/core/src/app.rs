@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
 use crate::signaling::FirebaseSignaling;
+use crate::turn::fetch_elixir_webrtc_turn;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProfileInfo {
@@ -375,12 +376,17 @@ impl CorgigramApp {
         Ok(self.storage.list_messages(contact_id)?)
     }
 
-    fn ice_config(&self) -> IceConfig {
-        if self.config.firebase_configured() {
-            IceConfig::default()
-        } else {
-            IceConfig::localhost()
+    async fn build_ice_config(&self) -> IceConfig {
+        if !self.config.firebase_configured() {
+            return IceConfig::localhost();
         }
+        let mut ice = IceConfig::default();
+        if let Ok(me) = self.my_user_id() {
+            if let Ok(turn) = fetch_elixir_webrtc_turn(&me).await {
+                ice.add_turn_server(turn);
+            }
+        }
+        ice
     }
 
     fn firebase(&self) -> Result<FirebaseSignaling> {
@@ -454,7 +460,7 @@ impl CorgigramApp {
             fb.clear_signaling(contact_id).await.ok();
         }
 
-        let (peer, offer_sdp) = run_offerer_role(&self.ice_config()).await?;
+        let (peer, offer_sdp) = run_offerer_role(&self.build_ice_config().await).await?;
 
         if self.config.firebase_configured() {
             let me = self.my_user_id()?;
@@ -526,7 +532,7 @@ impl CorgigramApp {
             .get_contact(contact_id)?
             .context("contact not found")?;
 
-        let (mut peer, answer_sdp) = run_answerer_role(&self.ice_config(), offer_sdp).await?;
+        let (mut peer, answer_sdp) = run_answerer_role(&self.build_ice_config().await, offer_sdp).await?;
         let mut seen_ice = HashSet::new();
         let me = self.my_user_id()?;
 
@@ -558,7 +564,7 @@ impl CorgigramApp {
         if self.pending_answer.lock().await.is_some() {
             return Ok(());
         }
-        let (peer, answer_sdp) = run_answerer_role(&self.ice_config(), offer_sdp).await?;
+        let (peer, answer_sdp) = run_answerer_role(&self.build_ice_config().await, offer_sdp).await?;
         if self.config.firebase_configured() {
             let me = self.my_user_id()?;
             self.firebase()?

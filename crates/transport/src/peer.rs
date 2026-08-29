@@ -358,7 +358,7 @@ async fn wait_for_incoming_data_channel(inner: &Inner) -> Result<()> {
 }
 
 async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>, ice: &IceConfig) -> Result<()> {
-    let needs_turn = !ice.turn_urls.is_empty();
+    let needs_turn = ice.has_turn();
     let max_wait = if needs_turn { 600 } else { 100 };
     for _ in 0..max_wait {
         if pc.ice_gathering_state() == RTCIceGatheringState::Complete {

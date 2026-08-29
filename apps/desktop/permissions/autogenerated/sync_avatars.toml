@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-avatars"
+description = "Enables the sync_avatars command without any pre-configured scope."
+commands.allow = ["sync_avatars"]
+
+[[permission]]
+identifier = "deny-sync-avatars"
+description = "Denies the sync_avatars command without any pre-configured scope."
+commands.deny = ["sync_avatars"]

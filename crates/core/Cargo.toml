@@ -1,0 +1,23 @@
+[package]
+name = "corgigram-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+corgigram-crypto = { path = "../crypto" }
+corgigram-protocol = { path = "../protocol" }
+corgigram-storage = { path = "../storage" }
+corgigram-transport = { path = "../transport" }
+dirs.workspace = true
+qrcode.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

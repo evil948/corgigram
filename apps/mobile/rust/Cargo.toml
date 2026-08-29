@@ -1,0 +1,21 @@
+[package]
+name = "corgigram-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+corgigram-core = { path = "../../../crates/core" }
+corgigram-storage = { path = "../../../crates/storage" }
+flutter_rust_bridge = "=2.11.1"
+once_cell = "1"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

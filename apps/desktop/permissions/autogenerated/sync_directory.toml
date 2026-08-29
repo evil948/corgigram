@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-directory"
+description = "Enables the sync_directory command without any pre-configured scope."
+commands.allow = ["sync_directory"]
+
+[[permission]]
+identifier = "deny-sync-directory"
+description = "Denies the sync_directory command without any pre-configured scope."
+commands.deny = ["sync_directory"]

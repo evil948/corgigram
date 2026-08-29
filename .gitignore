@@ -1,0 +1,11 @@
+/target
+/dist
+**/*.identity.json
+.env
+.env.*
+*.pem
+*.key
+.flutter-sdk/
+apps/mobile/.dart_tool/
+apps/mobile/build/
+apps/desktop/gen/

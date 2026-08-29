@@ -1,0 +1,897 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use base64::Engine;
+use chrono::Utc;
+use corgigram_crypto::{
+    decrypt_avatar, decrypt_mailbox, encrypt_avatar, encrypt_mailbox, Identity, PreKeyBundle,
+    Session, SessionInitiator, SessionResponder,
+};
+use corgigram_protocol::WireMessage;
+use corgigram_storage::{ContactRecord, MessageRecord, OutboxRecord, Storage};
+use corgigram_transport::{run_answerer_role, run_offerer_role, IceConfig, PeerConnection};
+use qrcode::QrCode;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+use crate::config::AppConfig;
+use crate::signaling::FirebaseSignaling;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProfileInfo {
+    pub user_id: String,
+    pub display_name: String,
+    pub bundle_json: String,
+    pub safety_hint: String,
+    pub avatar_data_url: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ConnectOfferResult {
+    pub offer_sdp: String,
+    pub contact_id: String,
+    pub auto_signaling: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ConnectAnswerResult {
+    pub answer_sdp: String,
+    pub contact_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ConnectAutoResult {
+    pub contact_id: String,
+    pub connected: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AppSnapshot {
+    pub has_identity: bool,
+    pub profile: Option<ProfileInfo>,
+    pub contacts: Vec<ContactRecord>,
+    pub connected_contact_id: Option<String>,
+    pub firebase_configured: bool,
+    pub firebase_database_url: String,
+    pub firebase_database_url_override: Option<String>,
+    pub firebase_uses_default_url: bool,
+    pub outbox_count: usize,
+}
+
+struct PendingOffer {
+    contact_id: String,
+    peer: PeerConnection,
+}
+
+struct ActiveChat {
+    contact_id: String,
+    peer: PeerConnection,
+    session: Session,
+}
+
+pub struct CorgigramApp {
+    data_dir: PathBuf,
+    config: AppConfig,
+    storage: Storage,
+    identity: Option<Identity>,
+    active: Arc<Mutex<Option<ActiveChat>>>,
+    pending_offer: Arc<Mutex<Option<PendingOffer>>>,
+}
+
+impl CorgigramApp {
+    pub fn open_default() -> Result<Self> {
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("corgigram");
+        Self::open(data_dir)
+    }
+
+    pub fn open(data_dir: PathBuf) -> Result<Self> {
+        std::fs::create_dir_all(&data_dir)?;
+        let config_path = data_dir.join("config.json");
+        let config = AppConfig::load(&config_path);
+        let storage = Storage::open(&data_dir.join("corgigram.db"))?;
+        let mut app = Self {
+            data_dir,
+            config,
+            storage,
+            identity: None,
+            active: Arc::new(Mutex::new(None)),
+            pending_offer: Arc::new(Mutex::new(None)),
+        };
+        app.load_identity()?;
+        Ok(app)
+    }
+
+    pub fn update_config(&mut self, config: AppConfig) -> Result<()> {
+        let config = config.with_normalized_firebase_url();
+        config.save(&self.data_dir.join("config.json"))?;
+        self.config = config;
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Result<AppSnapshot> {
+        Ok(AppSnapshot {
+            has_identity: self.identity.is_some(),
+            profile: self.profile_info(),
+            contacts: self.contacts_with_avatars()?,
+            connected_contact_id: self
+                .active
+                .try_lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|a| a.contact_id.clone())),
+            firebase_configured: self.config.firebase_configured(),
+            firebase_database_url: self.config.effective_firebase_database_url(),
+            firebase_database_url_override: self.config.firebase_database_url_override(),
+            firebase_uses_default_url: self.config.uses_default_firebase_url(),
+            outbox_count: self.storage.outbox_count()?,
+        })
+    }
+
+    pub fn create_identity(&mut self, user_id: &str, display_name: &str) -> Result<ProfileInfo> {
+        let user_id = normalize_user_id(user_id)?;
+        let identity = Identity::generate(&user_id, display_name);
+        self.save_identity(&identity)?;
+        self.identity = Some(identity);
+        self.profile_info().context("profile missing")
+    }
+
+    pub fn update_profile(
+        &mut self,
+        display_name: Option<&str>,
+        avatar_data_url: Option<&str>,
+        remove_avatar: bool,
+    ) -> Result<ProfileInfo> {
+        if self.identity.is_none() {
+            anyhow::bail!("no identity");
+        }
+        if let Some(name) = display_name {
+            let name = name.trim();
+            if name.is_empty() {
+                anyhow::bail!("nickname cannot be empty");
+            }
+            if name.chars().count() > 64 {
+                anyhow::bail!("nickname too long (max 64)");
+            }
+            {
+                let identity = self.identity.as_mut().unwrap();
+                identity.public.display_name = name.to_string();
+            }
+            let identity = self.identity.as_ref().unwrap();
+            self.save_identity(identity)?;
+        }
+        if remove_avatar {
+            self.clear_avatar()?;
+        } else if let Some(data_url) = avatar_data_url {
+            if !data_url.is_empty() {
+                self.save_avatar(data_url)?;
+            }
+        }
+        self.profile_info().context("profile missing")
+    }
+
+    pub fn profile_info(&self) -> Option<ProfileInfo> {
+        self.identity.as_ref().map(|id| ProfileInfo {
+            user_id: id.public.user_id.clone(),
+            display_name: id.public.display_name.clone(),
+            bundle_json: serde_json::to_string_pretty(&id.prekey_bundle()).unwrap_or_default(),
+            safety_hint: "Share bundle via QR — verify safety number in chat".into(),
+            avatar_data_url: self.load_avatar_data_url(),
+        })
+    }
+
+    pub fn bundle_qr_png_base64(&self) -> Result<String> {
+        let identity = self.identity.as_ref().context("no identity")?;
+        let bundle_json = serde_json::to_string(&identity.prekey_bundle())?;
+        let code = QrCode::new(bundle_json.as_bytes()).context("qr encode")?;
+        let image = code.render::<qrcode::render::svg::Color>().build();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(image.as_bytes());
+        Ok(format!("data:image/svg+xml;base64,{b64}"))
+    }
+
+    pub fn add_contact_from_bundle_json(&mut self, bundle_json: &str) -> Result<ContactRecord> {
+        let bundle: PreKeyBundle = serde_json::from_str(bundle_json)?;
+        bundle.verify().map_err(|e| anyhow::anyhow!("invalid bundle: {e}"))?;
+        self.add_contact_from_bundle(bundle)
+    }
+
+    pub fn add_contact_from_bundle(&mut self, bundle: PreKeyBundle) -> Result<ContactRecord> {
+        bundle.verify().map_err(|e| anyhow::anyhow!("invalid bundle: {e}"))?;
+        if self
+            .my_user_id()
+            .ok()
+            .is_some_and(|me| me == bundle.identity.user_id)
+        {
+            anyhow::bail!("cannot add yourself as a contact");
+        }
+        let contact = ContactRecord {
+            user_id: bundle.identity.user_id.clone(),
+            display_name: bundle.identity.display_name.clone(),
+            bundle,
+            created_at: Utc::now(),
+            avatar_data_url: None,
+        };
+        self.storage.upsert_contact(&contact)?;
+        Ok(contact)
+    }
+
+    pub async fn request_contact_avatar(&self, owner_id: &str) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let me = self.my_user_id()?;
+        if me == owner_id {
+            return Ok(());
+        }
+        self.firebase()?.request_avatar(owner_id, &me).await
+    }
+
+    /// Publish directory bundle + E2E encrypted avatar copies for contacts.
+    pub async fn sync_directory(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let identity = self.identity.as_ref().context("no identity")?;
+        let bundle = identity.prekey_bundle();
+        let me = identity.public.user_id.clone();
+        let fb = self.firebase()?;
+        fb.publish_directory(&me, &bundle).await?;
+        self.sync_avatar_uploads().await
+    }
+
+    /// Fetch encrypted contact avatars from Firebase and refresh local cache.
+    pub async fn sync_avatars(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        self.sync_avatar_uploads().await?;
+        self.sync_avatar_downloads().await
+    }
+
+    async fn sync_avatar_uploads(&self) -> Result<()> {
+        let identity = self.identity.as_ref().context("no identity")?;
+        let me = identity.public.user_id.clone();
+        let fb = self.firebase()?;
+
+        let mut viewers: HashSet<String> = self
+            .storage
+            .list_contacts()?
+            .into_iter()
+            .map(|c| c.user_id)
+            .collect();
+        for viewer_id in fb.list_avatar_wants(&me).await? {
+            viewers.insert(viewer_id);
+        }
+
+        let avatar_bytes = self.load_avatar_bytes()?;
+        let mime = self
+            .storage
+            .get_meta("avatar_mime")
+            .ok()
+            .flatten()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "image/png".into());
+
+        for viewer_id in viewers {
+            if viewer_id == me {
+                continue;
+            }
+            let viewer_bundle = match self.storage.get_contact(&viewer_id)? {
+                Some(c) => c.bundle,
+                None => match fb.fetch_directory(&viewer_id).await? {
+                    Some(b) => b,
+                    None => continue,
+                },
+            };
+            if let Some(bytes) = &avatar_bytes {
+                let ciphertext = encrypt_avatar(identity, &viewer_bundle, bytes)
+                    .map_err(|e| anyhow::anyhow!("avatar encrypt: {e}"))?;
+                fb.publish_avatar(&me, &viewer_id, &ciphertext, &mime).await?;
+            } else {
+                fb.delete_avatar(&me, &viewer_id).await.ok();
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn sync_avatar_downloads(&self) -> Result<()> {
+        let identity = self.identity.as_ref().context("no identity")?;
+        let me = identity.public.user_id.clone();
+        let fb = self.firebase()?;
+
+        for contact in self.storage.list_contacts()? {
+            let Some(entry) = fb.fetch_avatar(&contact.user_id, &me).await? else {
+                continue;
+            };
+            let blob = base64::engine::general_purpose::STANDARD
+                .decode(&entry.ciphertext)
+                .context("avatar ciphertext base64")?;
+            let plain = decrypt_avatar(identity, &contact.bundle, &blob)
+                .map_err(|e| anyhow::anyhow!("avatar decrypt from {}: {e}", contact.user_id))?;
+            self.save_contact_avatar(&contact.user_id, &plain, &entry.mime)?;
+        }
+        Ok(())
+    }
+
+    pub async fn add_contact_by_user_id(&mut self, user_id: &str) -> Result<ContactRecord> {
+        if !self.config.firebase_configured() {
+            anyhow::bail!("lookup by ID requires Firebase (enabled by default)");
+        }
+        let user_id = normalize_user_id(user_id)?;
+        if self.my_user_id()? == user_id {
+            anyhow::bail!("cannot add yourself as a contact");
+        }
+        if self.storage.get_contact(&user_id)?.is_some() {
+            anyhow::bail!("contact already exists");
+        }
+        let bundle = self
+            .firebase()?
+            .fetch_directory(&user_id)
+            .await?
+            .with_context(|| format!("user '{user_id}' not found — they must open Corgigram at least once"))?;
+        let contact = self.add_contact_from_bundle(bundle)?;
+        let owner_id = contact.user_id.clone();
+        self.request_contact_avatar(&owner_id).await?;
+        self.sync_avatar_downloads().await?;
+        self.contacts_with_avatars()?
+            .into_iter()
+            .find(|c| c.user_id == owner_id)
+            .context("contact missing after add")
+    }
+
+    pub fn safety_number(&self, contact_id: &str) -> Result<String> {
+        let identity = self.identity.as_ref().context("no identity")?;
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+        Ok(identity.public.safety_number(&contact.bundle.identity))
+    }
+
+    pub fn messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {
+        Ok(self.storage.list_messages(contact_id)?)
+    }
+
+    fn ice_config(&self) -> IceConfig {
+        if self.config.firebase_configured() {
+            IceConfig::default()
+        } else {
+            IceConfig::localhost()
+        }
+    }
+
+    fn firebase(&self) -> Result<FirebaseSignaling> {
+        Ok(FirebaseSignaling::new(
+            &self.config.effective_firebase_database_url(),
+            self.config.firebase_auth_token.clone(),
+        ))
+    }
+
+    fn my_user_id(&self) -> Result<String> {
+        Ok(self
+            .identity
+            .as_ref()
+            .context("no identity")?
+            .public
+            .user_id
+            .clone())
+    }
+
+    /// Offerer: create offer, optionally wait for answer via Firebase, complete handshake.
+    pub async fn connect_auto(&self, contact_id: &str) -> Result<ConnectAutoResult> {
+        let offer = self.connect_offer(contact_id).await?;
+        if offer.auto_signaling {
+            let me = self.my_user_id()?;
+            let fb = self.firebase()?;
+            let answer = fb.wait_answer(&me, contact_id, 120).await?;
+            self.connect_finish(contact_id, &answer).await?;
+            fb.clear_signaling(&me).await.ok();
+            self.sync_mailbox(contact_id).await?;
+            self.flush_outbox(contact_id).await?;
+            return Ok(ConnectAutoResult {
+                contact_id: contact_id.to_string(),
+                connected: true,
+            });
+        }
+        Ok(ConnectAutoResult {
+            contact_id: contact_id.to_string(),
+            connected: false,
+        })
+    }
+
+    pub async fn connect_offer(&self, contact_id: &str) -> Result<ConnectOfferResult> {
+        self.storage.get_contact(contact_id)?.context("contact not found")?;
+        let (peer, offer_sdp) = run_offerer_role(&self.ice_config()).await?;
+
+        if self.config.firebase_configured() {
+            let me = self.my_user_id()?;
+            self.firebase()?
+                .publish_offer(contact_id, &me, &offer_sdp)
+                .await?;
+        }
+
+        *self.pending_offer.lock().await = Some(PendingOffer {
+            contact_id: contact_id.to_string(),
+            peer,
+        });
+
+        Ok(ConnectOfferResult {
+            offer_sdp,
+            contact_id: contact_id.to_string(),
+            auto_signaling: self.config.firebase_configured(),
+        })
+    }
+
+    pub async fn connect_finish(&self, contact_id: &str, answer_sdp: &str) -> Result<()> {
+        self.finish_pending_offer(contact_id, answer_sdp).await?;
+        self.sync_mailbox(contact_id).await?;
+        self.flush_outbox(contact_id).await?;
+        Ok(())
+    }
+
+    async fn finish_pending_offer(&self, contact_id: &str, answer_sdp: &str) -> Result<()> {
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+
+        let mut pending = self.pending_offer.lock().await;
+        let Some(mut pending_offer) = pending.take() else {
+            anyhow::bail!("no pending offer");
+        };
+        if pending_offer.contact_id != contact_id {
+            anyhow::bail!("pending offer is for another contact");
+        }
+
+        pending_offer.peer.set_remote_answer(answer_sdp).await?;
+        let session = self
+            .run_session_handshake_as_initiator(&mut pending_offer.peer, identity, &contact.bundle)
+            .await?;
+
+        *self.active.lock().await = Some(ActiveChat {
+            contact_id: contact_id.to_string(),
+            peer: pending_offer.peer,
+            session,
+        });
+        Ok(())
+    }
+
+    pub async fn connect_answer(&self, offer_sdp: &str, contact_id: &str) -> Result<ConnectAnswerResult> {
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+
+        let (mut peer, answer_sdp) = run_answerer_role(&self.ice_config(), offer_sdp).await?;
+
+        if self.config.firebase_configured() {
+            let me = self.my_user_id()?;
+            self.firebase()?
+                .publish_answer(contact_id, &me, &answer_sdp)
+                .await?;
+        }
+
+        peer.wait_ready().await?;
+        let session = self
+            .run_session_handshake_as_responder(&mut peer, identity, &contact.bundle)
+            .await?;
+
+        *self.active.lock().await = Some(ActiveChat {
+            contact_id: contact_id.to_string(),
+            peer,
+            session,
+        });
+
+        Ok(ConnectAnswerResult {
+            answer_sdp,
+            contact_id: contact_id.to_string(),
+        })
+    }
+
+    /// Poll Firebase for incoming WebRTC offers and auto-answer known contacts.
+    pub async fn poll_signaling(&self) -> Result<Option<String>> {
+        if !self.config.firebase_configured() {
+            return Ok(None);
+        }
+        if self.active.lock().await.is_some() {
+            return Ok(None);
+        }
+
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        let Some(offer) = fb.fetch_offer(&me).await? else {
+            return Ok(None);
+        };
+
+        if self.storage.get_contact(&offer.from)?.is_none() {
+            return Ok(None);
+        }
+
+        let last_key = format!("last_offer_ts_{}", offer.from);
+        if let Some(last) = self.storage.get_meta(&last_key)? {
+            if last.parse::<i64>().unwrap_or(0) >= offer.ts {
+                return Ok(None);
+            }
+        }
+
+        self.connect_answer(&offer.sdp, &offer.from).await?;
+        self.storage.set_meta(&last_key, &offer.ts.to_string())?;
+        fb.clear_signaling(&me).await.ok();
+        self.sync_mailbox(&offer.from).await?;
+        Ok(Some(offer.from))
+    }
+
+    pub async fn send_message(&self, contact_id: &str, text: &str) -> Result<MessageRecord> {
+        let record = MessageRecord {
+            id: Storage::new_message_id(),
+            contact_id: contact_id.to_string(),
+            direction: "out".into(),
+            body: text.to_string(),
+            status: "pending".into(),
+            created_at: Utc::now(),
+        };
+
+        if let Some(sent) = self.try_send_live(contact_id, text, &record.id).await? {
+            return Ok(sent);
+        }
+
+        self.queue_offline(contact_id, text, &record).await?;
+        Ok(record)
+    }
+
+    async fn try_send_live(
+        &self,
+        contact_id: &str,
+        text: &str,
+        msg_id: &str,
+    ) -> Result<Option<MessageRecord>> {
+        let mut guard = self.active.lock().await;
+        let Some(active) = guard.as_mut() else {
+            return Ok(None);
+        };
+        if active.contact_id != contact_id {
+            return Ok(None);
+        }
+
+        let encrypted = active.session.encrypt(text.as_bytes())?;
+        active
+            .peer
+            .send(&WireMessage::EncryptedChat { ciphertext: encrypted }.to_bytes()?)
+            .await?;
+
+        let record = MessageRecord {
+            id: msg_id.to_string(),
+            contact_id: contact_id.to_string(),
+            direction: "out".into(),
+            body: text.to_string(),
+            status: "sent".into(),
+            created_at: Utc::now(),
+        };
+        self.storage.insert_message(&record)?;
+        Ok(Some(record))
+    }
+
+    async fn queue_offline(&self, contact_id: &str, text: &str, record: &MessageRecord) -> Result<()> {
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+        let me = identity.public.user_id.clone();
+
+        let ciphertext = encrypt_mailbox(&identity, &contact.bundle, text.as_bytes())?;
+
+        if self.config.firebase_configured() {
+            self.firebase()?
+                .publish_mailbox(contact_id, &record.id, &me, &ciphertext)
+                .await?;
+        }
+
+        self.storage.insert_outbox(&OutboxRecord {
+            id: record.id.clone(),
+            contact_id: contact_id.to_string(),
+            body: text.to_string(),
+            status: if self.config.firebase_configured() {
+                "queued_firebase".into()
+            } else {
+                "queued_local".into()
+            },
+            created_at: record.created_at,
+        })?;
+        self.storage.insert_message(record)?;
+        Ok(())
+    }
+
+    pub async fn sync_mailbox(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {
+        if !self.config.firebase_configured() {
+            return Ok(vec![]);
+        }
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        let entries = fb.list_mailbox(&me).await?;
+        let mut received = Vec::new();
+
+        for (msg_id, entry) in entries {
+            if entry.from != contact_id {
+                continue;
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&entry.ciphertext)
+                .context("mailbox b64")?;
+            let plain = decrypt_mailbox(&identity, &contact.bundle, &bytes)?;
+            let record = MessageRecord {
+                id: msg_id.clone(),
+                contact_id: contact_id.to_string(),
+                direction: "in".into(),
+                body: String::from_utf8_lossy(&plain).into_owned(),
+                status: "delivered".into(),
+                created_at: Utc::now(),
+            };
+            self.storage.insert_message(&record)?;
+            fb.delete_mailbox(&me, &msg_id).await.ok();
+            received.push(record);
+        }
+        Ok(received)
+    }
+
+    pub async fn flush_outbox(&self, contact_id: &str) -> Result<()> {
+        let items = self.storage.list_outbox(Some(contact_id))?;
+        for item in items {
+            if self
+                .try_send_live(&item.contact_id, &item.body, &item.id)
+                .await?
+                .is_some()
+            {
+                self.storage.delete_outbox(&item.id)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn poll_incoming(&self) -> Result<Vec<MessageRecord>> {
+        let mut received = Vec::new();
+
+        if let Some(contact_id) = self.poll_signaling().await? {
+            received.extend(self.sync_mailbox(&contact_id).await?);
+        }
+
+        for contact in self.storage.list_contacts()? {
+            received.extend(self.sync_mailbox(&contact.user_id).await?);
+        }
+
+        let mut guard = self.active.lock().await;
+        let Some(active) = guard.as_mut() else {
+            return Ok(received);
+        };
+
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                active.peer.recv(),
+            )
+            .await
+            {
+                Ok(Some(bytes)) => {
+                    if let WireMessage::EncryptedChat { ciphertext } = WireMessage::from_bytes(&bytes)? {
+                        let plain = active.session.decrypt(&ciphertext)?;
+                        let record = MessageRecord {
+                            id: Storage::new_message_id(),
+                            contact_id: active.contact_id.clone(),
+                            direction: "in".into(),
+                            body: String::from_utf8_lossy(&plain).into_owned(),
+                            status: "delivered".into(),
+                            created_at: Utc::now(),
+                        };
+                        self.storage.insert_message(&record)?;
+                        received.push(record);
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(received)
+    }
+
+    async fn run_session_handshake_as_initiator(
+        &self,
+        peer: &mut PeerConnection,
+        identity: Identity,
+        remote_bundle: &PreKeyBundle,
+    ) -> Result<Session> {
+        let (initiator, init) = SessionInitiator::begin(identity, remote_bundle)?;
+        peer.send(&WireMessage::SessionInit(init).to_bytes()?).await?;
+        let ack_bytes = recv_bytes(peer, 30).await?;
+        let ack = match WireMessage::from_bytes(&ack_bytes)? {
+            WireMessage::SessionAck(v) => v,
+            other => anyhow::bail!("unexpected {other:?}"),
+        };
+        Ok(initiator.complete(&ack)?)
+    }
+
+    async fn run_session_handshake_as_responder(
+        &self,
+        peer: &mut PeerConnection,
+        identity: Identity,
+        _remote_bundle: &PreKeyBundle,
+    ) -> Result<Session> {
+        let init_bytes = recv_bytes(peer, 30).await?;
+        let init = match WireMessage::from_bytes(&init_bytes)? {
+            WireMessage::SessionInit(v) => v,
+            other => anyhow::bail!("unexpected {other:?}"),
+        };
+        let (responder, ack) = SessionResponder::accept(identity, &init)?;
+        peer.send(&WireMessage::SessionAck(ack).to_bytes()?).await?;
+        Ok(responder.complete(&init)?)
+    }
+
+    fn load_identity(&mut self) -> Result<()> {
+        let path = self.data_dir.join("identity.json");
+        if path.exists() {
+            let json = std::fs::read_to_string(path)?;
+            self.identity = Some(Identity::load_json(&json)?);
+        }
+        Ok(())
+    }
+
+    fn save_identity(&self, identity: &Identity) -> Result<()> {
+        std::fs::write(self.data_dir.join("identity.json"), identity.save_json()?)?;
+        self.storage.set_meta("user_id", &identity.public.user_id)?;
+        Ok(())
+    }
+
+    fn avatar_path(&self) -> PathBuf {
+        self.data_dir.join("avatar")
+    }
+
+    fn contact_avatar_path(&self, contact_id: &str) -> PathBuf {
+        self.data_dir.join("contact_avatars").join(contact_id)
+    }
+
+    fn load_avatar_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let path = self.avatar_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)?;
+        if bytes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(bytes))
+        }
+    }
+
+    pub fn contacts_with_avatars(&self) -> Result<Vec<ContactRecord>> {
+        let mut contacts = self.storage.list_contacts()?;
+        for c in &mut contacts {
+            c.avatar_data_url = self.load_contact_avatar_data_url(&c.user_id);
+        }
+        Ok(contacts)
+    }
+
+    fn load_contact_avatar_data_url(&self, contact_id: &str) -> Option<String> {
+        let path = self.contact_avatar_path(contact_id);
+        if !path.exists() {
+            return None;
+        }
+        let mime = self
+            .storage
+            .get_meta(&format!("contact_avatar_mime:{contact_id}"))
+            .ok()
+            .flatten()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "image/png".into());
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Some(format!("data:{mime};base64,{b64}"))
+    }
+
+    fn save_contact_avatar(&self, contact_id: &str, bytes: &[u8], mime: &str) -> Result<()> {
+        let dir = self.data_dir.join("contact_avatars");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(self.contact_avatar_path(contact_id), bytes)?;
+        self.storage
+            .set_meta(&format!("contact_avatar_mime:{contact_id}"), mime)?;
+        Ok(())
+    }
+
+    fn load_avatar_data_url(&self) -> Option<String> {
+        let path = self.avatar_path();
+        if !path.exists() {
+            return None;
+        }
+        let mime = self
+            .storage
+            .get_meta("avatar_mime")
+            .ok()
+            .flatten()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "image/png".into());
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Some(format!("data:{mime};base64,{b64}"))
+    }
+
+    fn clear_avatar(&self) -> Result<()> {
+        let path = self.avatar_path();
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        self.storage.set_meta("avatar_mime", "")?;
+        Ok(())
+    }
+
+    fn save_avatar(&self, data_url: &str) -> Result<()> {
+        const MAX_BYTES: usize = 512 * 1024;
+
+        let (mime, bytes) = parse_image_data_url(data_url)?;
+        if bytes.len() > MAX_BYTES {
+            anyhow::bail!("avatar too large (max 512 KB)");
+        }
+        std::fs::write(self.avatar_path(), &bytes)?;
+        self.storage.set_meta("avatar_mime", &mime)?;
+        Ok(())
+    }
+}
+
+fn normalize_user_id(user_id: &str) -> Result<String> {
+    let id = user_id.trim().trim_start_matches('@');
+    if id.is_empty() {
+        anyhow::bail!("user ID cannot be empty");
+    }
+    if id.chars().count() > 64 {
+        anyhow::bail!("user ID too long (max 64)");
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        anyhow::bail!("user ID may only contain letters, numbers, _, -, .");
+    }
+    Ok(id.to_string())
+}
+
+fn parse_image_data_url(data_url: &str) -> Result<(String, Vec<u8>)> {
+    let trimmed = data_url.trim();
+    if trimmed.starts_with("data:") {
+        let rest = trimmed.strip_prefix("data:").unwrap();
+        let (meta, payload) = rest
+            .split_once(',')
+            .context("invalid avatar data URL")?;
+        let mime = meta
+            .split(';')
+            .next()
+            .unwrap_or("image/png")
+            .to_string();
+        if !mime.starts_with("image/") {
+            anyhow::bail!("avatar must be an image");
+        }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(payload)?;
+        return Ok((mime, bytes));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(trimmed)?;
+    Ok(("image/png".into(), bytes))
+}
+
+async fn recv_bytes(peer: &mut PeerConnection, secs: u64) -> Result<Vec<u8>> {
+    tokio::time::timeout(std::time::Duration::from_secs(secs), peer.recv())
+        .await
+        .context("timeout")?
+        .context("connection closed")
+}
+
+pub type SharedApp = Arc<tokio::sync::RwLock<CorgigramApp>>;

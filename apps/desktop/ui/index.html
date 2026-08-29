@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Corgigram</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Onboarding -->
+  <div id="onboarding" class="screen">
+    <div class="onboard-card">
+      <div class="onboard-avatar-wrap">
+        <button type="button" id="btn-onboard-avatar" class="avatar avatar-xl avatar-btn" title="Выбрать фото">
+          <span id="onboard-avatar-fallback">🐕</span>
+          <img id="onboard-avatar-img" class="hidden" alt="" />
+        </button>
+        <span class="avatar-hint">Нажмите, чтобы добавить фото</span>
+        <input id="input-onboard-avatar" type="file" accept="image/*" class="hidden" />
+      </div>
+      <h1>Corgigram</h1>
+      <p class="subtitle">Приватный чат для своих. Сообщения видите только вы.</p>
+      <label>Имя пользователя (ID)</label>
+      <input id="input-user-id" type="text" placeholder="alice" autocomplete="username" />
+      <label>Никнейм</label>
+      <input id="input-display-name" type="text" placeholder="Alice" autocomplete="nickname" />
+      <button id="btn-create-identity" class="btn-primary">Создать профиль</button>
+    </div>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="sidebar-title">
+          <span class="logo-small">Corgigram</span>
+          <button id="btn-settings" class="icon-btn" title="Настройки">⚙</button>
+        </div>
+        <div class="search-box">
+          <input id="search-contacts" type="search" placeholder="Поиск" />
+        </div>
+      </header>
+
+      <div class="sidebar-actions">
+        <button id="btn-add-contact" class="btn-ghost">+ Контакт</button>
+        <button id="btn-show-qr" class="btn-ghost">Мой QR</button>
+      </div>
+
+      <ul id="contact-list" class="contact-list"></ul>
+
+      <footer class="sidebar-footer">
+        <button type="button" id="btn-open-profile" class="profile-card">
+          <div id="profile-avatar" class="avatar avatar-sm"></div>
+          <div class="profile-meta">
+            <span id="profile-name" class="profile-name"></span>
+            <span id="profile-id" class="profile-id"></span>
+          </div>
+          <span class="profile-edit-hint">✎</span>
+        </button>
+        <span id="outbox-badge" class="outbox-badge hidden" title="Сообщения в очереди"></span>
+      </footer>
+    </aside>
+
+    <main class="chat-pane">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon-wrap">
+          <div class="empty-icon">🔒</div>
+        </div>
+        <h2>Выберите чат</h2>
+        <p>End-to-end шифрование · ключи только у вас</p>
+      </div>
+
+      <div id="chat-view" class="chat-view hidden">
+        <header class="chat-header">
+          <div class="chat-header-info">
+            <div id="chat-avatar" class="avatar"></div>
+            <div>
+              <h2 id="chat-title"></h2>
+              <p id="chat-status" class="e2e-badge">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                Защищено E2E
+              </p>
+            </div>
+          </div>
+          <div class="chat-header-actions">
+            <button id="btn-connect" class="btn-accent-sm">Подключиться</button>
+            <button id="btn-safety" class="icon-btn" title="Safety number">🛡</button>
+          </div>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <footer class="compose-bar">
+          <textarea id="message-input" rows="1" placeholder="Сообщение…"></textarea>
+          <button id="btn-send" class="send-btn" title="Отправить">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modals -->
+  <dialog id="modal-profile">
+    <h3>Мой профиль</h3>
+    <p class="modal-hint">Аватар хранится локально и синхронизируется с контактами через Firebase в зашифрованном виде (E2E).</p>
+    <div class="profile-edit-layout">
+      <button type="button" id="btn-profile-avatar" class="avatar avatar-lg avatar-btn">
+        <span id="profile-edit-fallback"></span>
+        <img id="profile-edit-img" class="hidden" alt="" />
+      </button>
+      <input id="input-profile-avatar" type="file" accept="image/*" class="hidden" />
+      <div class="profile-edit-fields">
+        <label>Никнейм</label>
+        <input id="input-profile-name" type="text" maxlength="64" />
+        <label>ID (не меняется)</label>
+        <input id="input-profile-user-id" type="text" readonly class="readonly" />
+      </div>
+    </div>
+    <div class="profile-edit-actions">
+      <button type="button" id="btn-remove-avatar" class="btn-ghost btn-danger-text">Удалить аватар</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeModal('modal-profile')">Отмена</button>
+      <button id="btn-save-profile" class="btn-primary">Сохранить</button>
+    </div>
+  </dialog>
+
+  <dialog id="modal-add-contact">
+    <h3>Добавить контакт</h3>
+    <div class="modal-tabs">
+      <button type="button" id="tab-add-by-id" class="modal-tab active">По ID</button>
+      <button type="button" id="tab-add-by-bundle" class="modal-tab">QR / JSON</button>
+    </div>
+
+    <div id="panel-add-by-id">
+      <p class="modal-hint">Введите ID собеседника. Он должен хотя бы раз открыть Corgigram, чтобы опубликовать ключи в Firebase.</p>
+      <label>ID пользователя</label>
+      <input id="input-contact-id" type="text" placeholder="bob" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
+        <button id="btn-add-by-id" class="btn-primary">Найти и добавить</button>
+      </div>
+    </div>
+
+    <div id="panel-add-by-bundle" class="hidden">
+      <p class="modal-hint">Вставьте JSON bundle от собеседника или отсканируйте QR</p>
+      <textarea id="input-bundle" rows="8" placeholder='{"identity":{...},"signature":"..."}'></textarea>
+      <div class="modal-actions">
+        <button class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
+        <button id="btn-save-contact" class="btn-primary">Добавить</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="modal-qr">
+    <h3>Ваш QR для pairing</h3>
+    <div id="qr-container"></div>
+    <p class="modal-hint">Покажите собеседнику. Проверьте safety number после добавления.</p>
+    <button class="btn-primary" onclick="closeModal('modal-qr')">Закрыть</button>
+  </dialog>
+
+  <dialog id="modal-connect">
+    <h3>WebRTC подключение</h3>
+    <p class="modal-hint">Обмен SDP. С Firebase — автоматически.</p>
+    <label>Offer SDP</label>
+    <textarea id="input-offer-sdp" rows="4" readonly></textarea>
+    <label>Answer SDP</label>
+    <textarea id="input-answer-sdp" rows="4" placeholder="Вставьте answer от собеседника"></textarea>
+    <div class="modal-actions">
+      <button id="btn-copy-offer" class="btn-ghost">Копировать offer</button>
+      <button id="btn-finish-connect" class="btn-primary">Завершить</button>
+    </div>
+    <hr />
+    <label>Или принять входящий offer</label>
+    <textarea id="input-incoming-offer" rows="3" placeholder="Offer от собеседника"></textarea>
+    <button id="btn-answer-connect" class="btn-accent-sm">Ответить (answerer)</button>
+  </dialog>
+
+  <dialog id="modal-safety">
+    <h3>Safety number</h3>
+    <p class="modal-hint">Сверьте с собеседником — как в Signal.</p>
+    <code id="safety-number" class="safety-code"></code>
+    <button class="btn-primary" onclick="closeModal('modal-safety')">OK</button>
+  </dialog>
+
+  <dialog id="modal-settings">
+    <h3>Настройки</h3>
+    <p class="modal-hint">Firebase включён по умолчанию.</p>
+    <label>Firebase Database URL</label>
+    <input id="input-firebase-url" type="url" placeholder="" />
+    <p id="firebase-default-hint" class="modal-hint"></p>
+    <label>Auth token (опционально)</label>
+    <input id="input-firebase-token" type="password" placeholder="secret or id token" />
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeModal('modal-settings')">Отмена</button>
+      <button id="btn-save-settings" class="btn-primary">Сохранить</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

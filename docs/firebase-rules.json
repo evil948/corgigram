@@ -1,0 +1,48 @@
+{
+  "rules": {
+    "signaling": {
+      "$userId": {
+        "offer": {
+          ".read": true,
+          ".write": true
+        },
+        "answer": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "mailboxes": {
+      "$userId": {
+        ".read": true,
+        "$msgId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "directory": {
+      "$userId": {
+        ".read": true,
+        ".write": true
+      }
+    },
+    "avatars": {
+      "$ownerId": {
+        "$viewerId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "avatar_wants": {
+      "$ownerId": {
+        ".read": true,
+        "$viewerId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    }
+  }
+}

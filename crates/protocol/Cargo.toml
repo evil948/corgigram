@@ -1,0 +1,11 @@
+[package]
+name = "corgigram-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corgigram-crypto = { path = "../crypto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

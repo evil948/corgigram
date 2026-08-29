@@ -1,8 +1,9 @@
-name: Build Windows
+# Deprecated: use the Release workflow instead (builds NSIS/AppImage + OTA latest.json).
+# Kept for quick raw .exe artifact without installer.
+
+name: Build Windows (legacy zip)
 
 on:
-  push:
-    branches: [master, main]
   workflow_dispatch:
 
 jobs:
@@ -10,31 +11,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Build desktop
         run: cargo build --release -p corgigram-desktop
-
-      - name: Package
+      - name: Package zip
         shell: pwsh
         run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version' | Select-Object -First 1).Line -replace '.*"(.*)".*','$1'
-          $out = "dist/corgigram-$version-windows-x86_64"
+          $out = "dist/corgigram-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item target/release/corgigram-desktop.exe "$out/corgigram-desktop.exe"
-          Copy-Item docs/release-test.md "$out/TESTING.md"
           Compress-Archive -Path "$out/*" -DestinationPath "corgigram-windows-x86_64.zip" -Force
-
       - uses: actions/upload-artifact@v4
         with:
           name: corgigram-windows-x86_64

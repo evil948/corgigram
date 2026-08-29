@@ -1,3 +1,5 @@
+mod updater;
+
 use std::sync::Arc;
 
 use corgigram_core::{AppConfig, AppSnapshot, ConnectAnswerResult, ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, ProfileInfo, SharedApp};
@@ -265,6 +267,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -288,6 +292,19 @@ pub fn run() {
             update_profile,
         ])
         .setup(move |app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
+            #[cfg(all(desktop, not(debug_assertions)))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    updater::check_and_install(handle).await;
+                });
+            }
+
             let sync_app = poll_app.clone();
             tauri::async_runtime::spawn(async move {
                 let app = sync_app.read().await;

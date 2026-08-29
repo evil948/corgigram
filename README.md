@@ -4,7 +4,16 @@ E2E-мессенджер для 2–5 человек. Дизайн — **Telegra
 
 ## Release (Linux + Windows)
 
-**Сборка:**
+**Сборка с автообновлением (AppImage / NSIS installer):**
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri/updater.key)"
+cd apps/desktop && cargo tauri build
+```
+
+GitHub Actions workflow **Release** публикует релиз и `latest.json` для OTA. Подробнее: [`docs/ota-updates.md`](docs/ota-updates.md).
+
+**Быстрая сборка (без OTA):**
 
 ```bash
 # Linux
@@ -19,7 +28,7 @@ sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3 base-devel
 
 **Тест Linux ↔ Windows:** [`docs/release-test.md`](docs/release-test.md)
 
-Артефакты: `dist/corgigram-0.1.0-{linux,windows}-x86_64/`
+Артефакты OTA: `target/release/bundle/appimage/` и `target/release/bundle/nsis/`.
 
 ## Build (dev)
 

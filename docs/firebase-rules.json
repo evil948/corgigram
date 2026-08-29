@@ -12,6 +12,7 @@
         },
         "ice": {
           "$fromUserId": {
+            ".read": true,
             "$candidateId": {
               ".read": true,
               ".write": true

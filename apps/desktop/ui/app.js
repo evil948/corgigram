@@ -116,6 +116,7 @@ async function refresh() {
   renderContacts();
   updateConnectButton();
   if (activeContactId) {
+    await refreshChatStatus();
     const c = snapshot.contacts.find(x => x.user_id === activeContactId);
     if (c) setAvatarEl($("chat-avatar"), c.display_name, c.avatar_data_url);
   }
@@ -471,13 +472,7 @@ listen("message-received", (e) => {
 listen("message-sent", async () => { await refresh(); });
 listen("contacts-updated", async () => {
   await refresh();
-  if (activeContactId) {
-    const c = snapshot?.contacts.find(x => x.user_id === activeContactId);
-    if (c) {
-      setAvatarEl($("chat-avatar"), c.display_name, c.avatar_data_url);
-      renderContacts();
-    }
-  }
+  if (activeContactId) await refreshChatStatus();
 });
 
 refresh();

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -99,6 +99,8 @@ pub struct CorgigramApp {
     storage: Storage,
     identity: Option<Identity>,
     active: Arc<Mutex<Option<ActiveChat>>>,
+    /// Updated alongside `active` so snapshot works while poll holds the async lock.
+    live_contact_id: Arc<RwLock<Option<String>>>,
     pending_offer: Arc<Mutex<Option<PendingOffer>>>,
     pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
 }
@@ -122,6 +124,7 @@ impl CorgigramApp {
             storage,
             identity: None,
             active: Arc::new(Mutex::new(None)),
+            live_contact_id: Arc::new(RwLock::new(None)),
             pending_offer: Arc::new(Mutex::new(None)),
             pending_answer: Arc::new(Mutex::new(None)),
         };
@@ -141,6 +144,13 @@ impl CorgigramApp {
         Ok(())
     }
 
+    async fn set_active_chat(&self, chat: ActiveChat) {
+        if let Ok(mut id) = self.live_contact_id.write() {
+            *id = Some(chat.contact_id.clone());
+        }
+        *self.active.lock().await = Some(chat);
+    }
+
     pub fn update_config(&mut self, config: AppConfig) -> Result<()> {
         let config = config.with_normalized_firebase_url();
         config.save(&self.data_dir.join("config.json"))?;
@@ -154,10 +164,10 @@ impl CorgigramApp {
             profile: self.profile_info(),
             contacts: self.contacts_with_avatars()?,
             connected_contact_id: self
-                .active
-                .try_lock()
+                .live_contact_id
+                .read()
                 .ok()
-                .and_then(|g| g.as_ref().map(|a| a.contact_id.clone())),
+                .and_then(|g| g.clone()),
             firebase_configured: self.config.firebase_configured(),
             firebase_database_url: self.config.effective_firebase_database_url(),
             firebase_database_url_override: self.config.firebase_database_url_override(),
@@ -450,7 +460,7 @@ impl CorgigramApp {
             contact_id: contact_id.to_string(),
             has_pending_offer: self.pending_offer.lock().await.is_some(),
             has_pending_answer: self.pending_answer.lock().await.is_some(),
-            is_active: self.active.lock().await.is_some(),
+            is_active: self.live_contact_id.read().ok().and_then(|g| g.clone()).is_some(),
             has_firebase_offer_to_me,
             has_firebase_answer_from_contact,
             local_ice_to_contact,
@@ -572,11 +582,12 @@ impl CorgigramApp {
             .run_session_handshake_as_initiator(&mut pending_offer.peer, identity, &contact.bundle)
             .await?;
 
-        *self.active.lock().await = Some(ActiveChat {
+        self.set_active_chat(ActiveChat {
             contact_id: contact_id.to_string(),
             peer: pending_offer.peer,
             session,
-        });
+        })
+        .await;
         Ok(())
     }
 
@@ -632,11 +643,12 @@ impl CorgigramApp {
             .run_session_handshake_as_responder(&mut peer, identity, &contact.bundle)
             .await?;
 
-        *self.active.lock().await = Some(ActiveChat {
+        self.set_active_chat(ActiveChat {
             contact_id: contact_id.to_string(),
             peer,
             session,
-        });
+        })
+        .await;
 
         Ok(ConnectAnswerResult {
             answer_sdp,
@@ -707,18 +719,23 @@ impl CorgigramApp {
             .storage
             .get_contact(&contact_id)?
             .context("contact not found")?;
-        let session = self
+        let session = match self
             .run_session_handshake_as_responder(&mut answer.peer, identity, &contact.bundle)
-            .await?;
+            .await
+        {
+            Ok(session) => session,
+            Err(_) => return Ok(None),
+        };
 
         let answer = pending.take().expect("pending answer");
         drop(pending);
 
-        *self.active.lock().await = Some(ActiveChat {
+        self.set_active_chat(ActiveChat {
             contact_id: contact_id.clone(),
             peer: answer.peer,
             session,
-        });
+        })
+        .await;
         self.firebase()?.clear_signaling(&me).await.ok();
         Ok(Some(contact_id))
     }

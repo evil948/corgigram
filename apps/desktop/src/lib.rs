@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use corgigram_core::{AppConfig, AppSnapshot, ConnectAnswerResult, ConnectAutoResult, ConnectOfferResult, CorgigramApp, ProfileInfo, SharedApp};
+use corgigram_core::{AppConfig, AppSnapshot, ConnectAnswerResult, ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, ProfileInfo, SharedApp};
 use corgigram_storage::{ContactRecord, MessageRecord};
 use tauri::{Emitter, State};
 
@@ -129,6 +129,20 @@ async fn connect_auto(state: State<'_, AppState>, contact_id: String) -> Result<
         .read()
         .await
         .connect_auto(&contact_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn diagnose_connect(
+    state: State<'_, AppState>,
+    contact_id: String,
+) -> Result<ConnectDiagnose, String> {
+    state
+        .app
+        .read()
+        .await
+        .diagnose_connect(&contact_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -264,6 +278,7 @@ pub fn run() {
             get_safety_number,
             connect_offer,
             connect_auto,
+            diagnose_connect,
             connect_finish,
             connect_answer,
             sync_mailbox,

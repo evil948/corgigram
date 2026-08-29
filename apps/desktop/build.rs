@@ -13,6 +13,7 @@ fn main() {
                 "get_safety_number",
                 "connect_offer",
                 "connect_auto",
+                "diagnose_connect",
                 "connect_finish",
                 "connect_answer",
                 "sync_mailbox",

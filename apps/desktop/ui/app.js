@@ -360,14 +360,19 @@ $("btn-connect").onclick = async () => {
     }
   } catch (e) {
     const msg = String(e);
+    let extra = "";
+    try {
+      const d = await invoke("diagnose_connect", { contactId: activeContactId });
+      extra = `\n\nДиагностика:\n• answer от друга: ${d.has_firebase_answer_from_contact ? "да" : "нет"}\n• ICE от вас → друг: ${d.local_ice_to_contact}\n• ICE от друга → вам: ${d.remote_ice_from_contact}\n• TURN доступен: ${d.turn_fetched ? "да" : "нет"}`;
+    } catch (_) {}
     if (msg.includes("firebase answer")) {
-      alert("Друг не ответил на подключение за 2 мин.\n\nУбедитесь, что у друга открыт Corgigram с новой версией (.exe из GitHub Actions), и попробуйте снова.\n\nOffline-сообщения работают без «Подключиться».");
+      alert("Друг не ответил на подключение за 2 мин.\n\nУбедитесь, что у друга открыт Corgigram с новой версией (.exe из GitHub Actions), и попробуйте снова.\n\nOffline-сообщения работают без «Подключиться»." + extra);
     } else if (msg.includes("peer connection") || msg.includes("data channel")) {
-      alert("Live-подключение не прошло (NAT/TURN).\n\nОба клиента должны быть на последней версии. Offline-сообщения работают без «Подключиться».");
+      alert("Live-подключение не прошло (NAT/TURN).\n\nОба клиента должны быть на последней версии. Offline-сообщения работают без «Подключиться»." + extra);
     } else if (msg.includes("timed out")) {
-      alert("Подключение не успело завершиться.\n\nOffline-сообщения работают без «Подключиться».");
+      alert("Подключение не успело завершиться.\n\nOffline-сообщения работают без «Подключиться»." + extra);
     } else {
-      alert("Ошибка: " + e);
+      alert("Ошибка: " + e + extra);
     }
   } finally {
     connecting = false;

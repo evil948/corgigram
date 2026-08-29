@@ -41,8 +41,13 @@ pub struct FirebaseSignaling {
 impl FirebaseSignaling {
     pub fn new(database_url: &str, auth_token: Option<String>) -> Self {
         let base_url = database_url.trim_end_matches('/').to_string();
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            client: Client::new(),
+            client,
             base_url,
             auth_token,
         }
@@ -163,21 +168,35 @@ impl FirebaseSignaling {
         from_user_id: &str,
     ) -> Result<Vec<(String, String)>> {
         let url = self.url(&format!("signaling/{user_id}/ice/{from_user_id}"));
-        let resp = self.client.get(&url).send().await?;
-        if resp.status().as_u16() == 404 {
-            return Ok(vec![]);
-        }
-        let value: serde_json::Value = resp.error_for_status()?.json().await?;
-        let Some(obj) = value.as_object() else {
-            return Ok(vec![]);
-        };
-        let mut out = Vec::new();
-        for (id, entry) in obj {
-            if let Some(c) = entry.get("c").and_then(|v| v.as_str()) {
-                out.push((id.clone(), c.to_string()));
+        let mut last_err = None;
+        for attempt in 0..3 {
+            match self.client.get(&url).send().await {
+                Ok(resp) => {
+                    if resp.status().as_u16() == 404 {
+                        return Ok(vec![]);
+                    }
+                    let value: serde_json::Value = resp.error_for_status()?.json().await?;
+                    let Some(obj) = value.as_object() else {
+                        return Ok(vec![]);
+                    };
+                    let mut out = Vec::new();
+                    for (id, entry) in obj {
+                        if let Some(c) = entry.get("c").and_then(|v| v.as_str()) {
+                            out.push((id.clone(), c.to_string()));
+                        }
+                    }
+                    return Ok(out);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(300 * (attempt + 1)))
+                            .await;
+                    }
+                }
             }
         }
-        Ok(out)
+        Err(last_err.unwrap().into())
     }
 
     pub async fn publish_mailbox(

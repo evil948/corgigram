@@ -430,8 +430,9 @@ impl CorgigramApp {
                 let mut pending = self.pending_offer.lock().await;
                 if let Some(p) = pending.as_mut() {
                     if p.contact_id == contact_id {
-                        self.exchange_ice(&p.peer, me, contact_id, &mut p.seen_ice)
-                            .await?;
+                        let _ = self
+                            .exchange_ice(&p.peer, me, contact_id, &mut p.seen_ice)
+                            .await;
                     }
                 }
             }
@@ -617,11 +618,13 @@ impl CorgigramApp {
         let fb = self.firebase()?;
         for candidate in peer.drain_local_candidates().await {
             let id = uuid::Uuid::new_v4().to_string();
-            fb.publish_ice_candidate(peer_id, me, &id, &candidate).await?;
+            let _ = fb.publish_ice_candidate(peer_id, me, &id, &candidate).await;
         }
-        for (id, candidate) in fb.list_ice_candidates(me, peer_id).await? {
-            if seen.insert(id) {
-                peer.add_remote_candidate(&candidate).await.ok();
+        if let Ok(candidates) = fb.list_ice_candidates(me, peer_id).await {
+            for (id, candidate) in candidates {
+                if seen.insert(id) {
+                    peer.add_remote_candidate(&candidate).await.ok();
+                }
             }
         }
         Ok(())
@@ -635,11 +638,11 @@ impl CorgigramApp {
         seen: &mut HashSet<String>,
     ) -> Result<()> {
         for _ in 0..450 {
-            self.exchange_ice(peer, me, peer_id, seen).await?;
+            let _ = self.exchange_ice(peer, me, peer_id, seen).await;
             if peer.is_connected() {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
         anyhow::bail!("timed out waiting for peer connection")
     }

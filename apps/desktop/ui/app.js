@@ -360,8 +360,12 @@ $("btn-connect").onclick = async () => {
     }
   } catch (e) {
     const msg = String(e);
-    if (msg.includes("peer connection") || msg.includes("timed out")) {
-      alert("Live-подключение не прошло (NAT/TURN). Offline-сообщения работают без кнопки «Подключиться».");
+    if (msg.includes("firebase answer")) {
+      alert("Друг не ответил на подключение за 2 мин.\n\nУбедитесь, что у друга открыт Corgigram с новой версией (.exe из GitHub Actions), и попробуйте снова.\n\nOffline-сообщения работают без «Подключиться».");
+    } else if (msg.includes("peer connection") || msg.includes("data channel")) {
+      alert("Live-подключение не прошло (NAT/TURN).\n\nОба клиента должны быть на последней версии. Offline-сообщения работают без «Подключиться».");
+    } else if (msg.includes("timed out")) {
+      alert("Подключение не успело завершиться.\n\nOffline-сообщения работают без «Подключиться».");
     } else {
       alert("Ошибка: " + e);
     }

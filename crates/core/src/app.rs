@@ -383,10 +383,27 @@ impl CorgigramApp {
         let mut ice = IceConfig::default();
         if let Ok(me) = self.my_user_id() {
             if let Ok(turn) = fetch_elixir_webrtc_turn(&me).await {
-                ice.add_turn_server(turn);
+                // Prefer elixir-webrtc relay; metered openrelay often fails to allocate.
+                ice.turn_servers = vec![turn];
             }
         }
         ice
+    }
+
+    /// Exchange trickle ICE for in-progress offer/answer handshakes.
+    pub async fn exchange_pending_ice(&self) -> Result<()> {
+        let me = self.my_user_id()?;
+        if let Some(offer) = self.pending_offer.lock().await.as_mut() {
+            let contact_id = offer.contact_id.clone();
+            self.exchange_ice(&offer.peer, &me, &contact_id, &mut offer.seen_ice)
+                .await?;
+        }
+        if let Some(answer) = self.pending_answer.lock().await.as_mut() {
+            let contact_id = answer.contact_id.clone();
+            self.exchange_ice(&answer.peer, &me, &contact_id, &mut answer.seen_ice)
+                .await?;
+        }
+        Ok(())
     }
 
     fn firebase(&self) -> Result<FirebaseSignaling> {
@@ -640,8 +657,20 @@ impl CorgigramApp {
             let id = uuid::Uuid::new_v4().to_string();
             let _ = fb.publish_ice_candidate(peer_id, me, &id, &candidate).await;
         }
+        // End-of-candidates marker for trickle ICE completion.
+        let eoc = serde_json::json!({"candidate":""}).to_string();
+        let _ = fb
+            .publish_ice_candidate(peer_id, me, "__eoc__", &eoc)
+            .await;
         if let Ok(candidates) = fb.list_ice_candidates(me, peer_id).await {
             for (id, candidate) in candidates {
+                if id == "__eoc__" {
+                    if seen.insert(id) {
+                        let eoc = serde_json::json!({"candidate":""}).to_string();
+                        peer.add_remote_candidate(&eoc).await.ok();
+                    }
+                    continue;
+                }
                 if seen.insert(id) {
                     peer.add_remote_candidate(&candidate).await.ok();
                 }

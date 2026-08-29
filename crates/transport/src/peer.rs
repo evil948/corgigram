@@ -73,6 +73,15 @@ impl PeerConnection {
                 .push(candidate_json.to_string());
             return Ok(());
         }
+        let init: RTCIceCandidateInit =
+            serde_json::from_str(candidate_json).context("parse remote ice candidate")?;
+        if init.candidate.is_empty() {
+            self.pc
+                .add_ice_candidate(RTCIceCandidateInit::default())
+                .await
+                .context("signal end-of-candidates")?;
+            return Ok(());
+        }
         self.add_ice_candidate_now(candidate_json).await
     }
 
@@ -92,7 +101,16 @@ impl PeerConnection {
             std::mem::take(&mut *guard)
         };
         for candidate in pending {
-            let _ = self.add_ice_candidate_now(&candidate).await;
+            if let Ok(init) = serde_json::from_str::<RTCIceCandidateInit>(&candidate) {
+                if init.candidate.is_empty() {
+                    let _ = self
+                        .pc
+                        .add_ice_candidate(RTCIceCandidateInit::default())
+                        .await;
+                } else {
+                    let _ = self.pc.add_ice_candidate(init).await;
+                }
+            }
         }
     }
 
@@ -240,7 +258,14 @@ impl Inner {
         };
         for candidate in pending {
             if let Ok(init) = serde_json::from_str::<RTCIceCandidateInit>(&candidate) {
-                let _ = self.pc.add_ice_candidate(init).await;
+                if init.candidate.is_empty() {
+                    let _ = self
+                        .pc
+                        .add_ice_candidate(RTCIceCandidateInit::default())
+                        .await;
+                } else {
+                    let _ = self.pc.add_ice_candidate(init).await;
+                }
             }
         }
     }

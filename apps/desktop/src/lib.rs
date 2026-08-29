@@ -290,14 +290,23 @@ pub fn run() {
                 }
             });
             let poll_handle = app.handle().clone();
+            let message_poll = poll_app.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                    let incoming = poll_app.read().await.poll_incoming().await.unwrap_or_default();
+                    let incoming = message_poll.read().await.poll_incoming().await.unwrap_or_default();
                     for msg in incoming {
                         let _ = poll_handle.emit("message-received", &msg);
                     }
                     let _ = poll_handle.emit("contacts-updated", ());
+                }
+            });
+            let ice_poll = poll_app.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let app = ice_poll.read().await;
+                    let _ = app.exchange_pending_ice().await;
                 }
             });
             Ok(())

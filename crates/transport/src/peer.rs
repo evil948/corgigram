@@ -25,14 +25,17 @@ pub struct PeerConnection {
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     incoming: mpsc::UnboundedReceiver<Vec<u8>>,
     ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
+    /// Remote trickle candidates received before setRemoteDescription (offerer side).
+    pending_remote_candidates: Arc<Mutex<Vec<String>>>,
 }
 
-struct PeerInner {
+struct Inner {
     pc: Arc<RTCPeerConnection>,
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     incoming_tx: mpsc::UnboundedSender<Vec<u8>>,
     incoming_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
+    pending_remote_candidates: Arc<Mutex<Vec<String>>>,
 }
 
 impl PeerConnection {
@@ -63,13 +66,34 @@ impl PeerConnection {
     }
 
     pub async fn add_remote_candidate(&self, candidate_json: &str) -> Result<()> {
-        let init: RTCIceCandidateInit = serde_json::from_str(candidate_json)
-            .context("parse remote ice candidate")?;
+        if self.pc.remote_description().await.is_none() {
+            self.pending_remote_candidates
+                .lock()
+                .await
+                .push(candidate_json.to_string());
+            return Ok(());
+        }
+        self.add_ice_candidate_now(candidate_json).await
+    }
+
+    async fn add_ice_candidate_now(&self, candidate_json: &str) -> Result<()> {
+        let init: RTCIceCandidateInit =
+            serde_json::from_str(candidate_json).context("parse remote ice candidate")?;
         self.pc
             .add_ice_candidate(init)
             .await
             .context("add ice candidate")?;
         Ok(())
+    }
+
+    async fn flush_pending_remote_candidates(&self) {
+        let pending: Vec<String> = {
+            let mut guard = self.pending_remote_candidates.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for candidate in pending {
+            let _ = self.add_ice_candidate_now(&candidate).await;
+        }
     }
 
     pub async fn drain_local_candidates(&self) -> Vec<String> {
@@ -86,6 +110,16 @@ impl PeerConnection {
             .set_remote_description(RTCSessionDescription::answer(answer_sdp.to_string())?)
             .await
             .context("set remote answer")?;
+        self.flush_pending_remote_candidates().await;
+        Ok(())
+    }
+
+    pub async fn apply_remote_offer(&self, offer_sdp: &str) -> Result<()> {
+        self.pc
+            .set_remote_description(RTCSessionDescription::offer(offer_sdp.to_string())?)
+            .await
+            .context("set remote offer")?;
+        self.flush_pending_remote_candidates().await;
         Ok(())
     }
 
@@ -198,15 +232,19 @@ pub async fn wait_for_incoming(
     Ok(inner.into_peer_connection())
 }
 
-struct Inner {
-    pc: Arc<RTCPeerConnection>,
-    data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-    incoming_tx: mpsc::UnboundedSender<Vec<u8>>,
-    incoming_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
-    ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
-}
-
 impl Inner {
+    async fn flush_pending_remote_candidates(&self) {
+        let pending: Vec<String> = {
+            let mut guard = self.pending_remote_candidates.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for candidate in pending {
+            if let Ok(init) = serde_json::from_str::<RTCIceCandidateInit>(&candidate) {
+                let _ = self.pc.add_ice_candidate(init).await;
+            }
+        }
+    }
+
     fn into_peer_connection(mut self) -> PeerConnection {
         PeerConnection {
             pc: self.pc,
@@ -216,6 +254,7 @@ impl Inner {
                 .take()
                 .expect("incoming receiver already taken"),
             ice_local_rx: Arc::clone(&self.ice_local_rx),
+            pending_remote_candidates: Arc::clone(&self.pending_remote_candidates),
         }
     }
 }
@@ -238,6 +277,7 @@ async fn new_peer(ice: &IceConfig) -> Result<Inner> {
 
     let config = RTCConfiguration {
         ice_servers: ice.rtc_ice_servers(),
+        ice_transport_policy: ice.ice_transport_policy(),
         ..Default::default()
     };
 
@@ -246,6 +286,7 @@ async fn new_peer(ice: &IceConfig) -> Result<Inner> {
     let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
     let (ice_local_tx, ice_local_rx) = mpsc::unbounded_channel();
     let ice_local_rx = Arc::new(Mutex::new(ice_local_rx));
+    let pending_remote_candidates = Arc::new(Mutex::new(Vec::new()));
 
     {
         let ice_local_tx = ice_local_tx.clone();
@@ -285,6 +326,7 @@ async fn new_peer(ice: &IceConfig) -> Result<Inner> {
         incoming_tx,
         incoming_rx: Some(incoming_rx),
         ice_local_rx,
+        pending_remote_candidates,
     })
 }
 
@@ -324,9 +366,7 @@ async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>, ice: &IceConfig) ->
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    if needs_turn {
-        anyhow::bail!("ICE gathering incomplete (TURN candidates may be missing)");
-    }
+    // Trickle ICE continues after SDP exchange; don't fail on slow TURN allocation.
     Ok(())
 }
 
@@ -416,6 +456,7 @@ pub async fn run_answerer_role(ice: &IceConfig, offer_sdp: &str) -> Result<(Peer
     pc.set_remote_description(RTCSessionDescription::offer(offer_sdp.to_string())?)
         .await
         .context("set remote offer")?;
+    inner.flush_pending_remote_candidates().await;
 
     let answer = pc.create_answer(None).await.context("create answer")?;
     pc.set_local_description(answer)

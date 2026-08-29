@@ -446,6 +446,14 @@ impl CorgigramApp {
 
     pub async fn connect_offer(&self, contact_id: &str) -> Result<ConnectOfferResult> {
         self.storage.get_contact(contact_id)?.context("contact not found")?;
+
+        if self.config.firebase_configured() {
+            let me = self.my_user_id()?;
+            let fb = self.firebase()?;
+            fb.clear_signaling(&me).await.ok();
+            fb.clear_signaling(contact_id).await.ok();
+        }
+
         let (peer, offer_sdp) = run_offerer_role(&self.ice_config()).await?;
 
         if self.config.firebase_configured() {
@@ -574,8 +582,14 @@ impl CorgigramApp {
         drop(pending);
 
         let me = self.my_user_id()?;
-        self.exchange_ice(&answer.peer, &me, &contact_id, &mut answer.seen_ice)
-            .await?;
+        for _ in 0..5 {
+            self.exchange_ice(&answer.peer, &me, &contact_id, &mut answer.seen_ice)
+                .await?;
+            if answer.peer.is_connected() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
 
         if !answer.peer.is_connected() {
             *self.pending_answer.lock().await = Some(answer);
@@ -637,12 +651,14 @@ impl CorgigramApp {
         peer_id: &str,
         seen: &mut HashSet<String>,
     ) -> Result<()> {
-        for _ in 0..450 {
-            let _ = self.exchange_ice(peer, me, peer_id, seen).await;
+        for _ in 0..600 {
+            for _ in 0..3 {
+                let _ = self.exchange_ice(peer, me, peer_id, seen).await;
+            }
             if peer.is_connected() {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
         anyhow::bail!("timed out waiting for peer connection")
     }

@@ -359,7 +359,12 @@ $("btn-connect").onclick = async () => {
       openModal("modal-connect");
     }
   } catch (e) {
-    alert("Ошибка: " + e);
+    const msg = String(e);
+    if (msg.includes("peer connection") || msg.includes("timed out")) {
+      alert("Live-подключение не прошло (NAT/TURN). Offline-сообщения работают без кнопки «Подключиться».");
+    } else {
+      alert("Ошибка: " + e);
+    }
   } finally {
     connecting = false;
     btn.disabled = false;

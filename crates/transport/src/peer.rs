@@ -9,6 +9,7 @@ use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::api::setting_engine::SettingEngine;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::interceptor::registry::Registry;
@@ -23,11 +24,15 @@ pub struct PeerConnection {
     pc: Arc<RTCPeerConnection>,
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     incoming: mpsc::UnboundedReceiver<Vec<u8>>,
+    ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
 }
 
 struct PeerInner {
+    pc: Arc<RTCPeerConnection>,
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     incoming_tx: mpsc::UnboundedSender<Vec<u8>>,
+    incoming_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
 }
 
 impl PeerConnection {
@@ -45,6 +50,43 @@ impl PeerConnection {
 
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.incoming.recv().await
+    }
+
+    pub fn is_connected(&self) -> bool {
+        matches!(
+            self.pc.connection_state(),
+            RTCPeerConnectionState::Connected
+        ) || matches!(
+            self.pc.ice_connection_state(),
+            RTCIceConnectionState::Connected | RTCIceConnectionState::Completed
+        )
+    }
+
+    pub async fn add_remote_candidate(&self, candidate_json: &str) -> Result<()> {
+        let init: RTCIceCandidateInit = serde_json::from_str(candidate_json)
+            .context("parse remote ice candidate")?;
+        self.pc
+            .add_ice_candidate(init)
+            .await
+            .context("add ice candidate")?;
+        Ok(())
+    }
+
+    pub async fn drain_local_candidates(&self) -> Vec<String> {
+        let mut rx = self.ice_local_rx.lock().await;
+        let mut out = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            out.push(c);
+        }
+        out
+    }
+
+    pub async fn apply_remote_answer(&self, answer_sdp: &str) -> Result<()> {
+        self.pc
+            .set_remote_description(RTCSessionDescription::answer(answer_sdp.to_string())?)
+            .await
+            .context("set remote answer")?;
+        Ok(())
     }
 
     pub async fn set_remote_answer(&self, answer_sdp: &str) -> Result<()> {
@@ -79,7 +121,7 @@ pub async fn create_offer(ice: &IceConfig) -> Result<String> {
     pc.set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&pc).await?;
+    wait_for_ice_gathering(&pc, ice).await?;
     let offer_sdp = pc
         .local_description()
         .await
@@ -101,7 +143,7 @@ pub async fn create_answer(ice: &IceConfig, offer_sdp: &str) -> Result<String> {
     pc.set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&pc).await?;
+    wait_for_ice_gathering(&pc, ice).await?;
     let answer_sdp = pc
         .local_description()
         .await
@@ -161,6 +203,7 @@ struct Inner {
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     incoming_tx: mpsc::UnboundedSender<Vec<u8>>,
     incoming_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    ice_local_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
 }
 
 impl Inner {
@@ -172,6 +215,7 @@ impl Inner {
                 .incoming_rx
                 .take()
                 .expect("incoming receiver already taken"),
+            ice_local_rx: Arc::clone(&self.ice_local_rx),
         }
     }
 }
@@ -200,6 +244,24 @@ async fn new_peer(ice: &IceConfig) -> Result<Inner> {
     let pc = Arc::new(api.new_peer_connection(config).await?);
     let data_channel = Arc::new(Mutex::new(None));
     let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+    let (ice_local_tx, ice_local_rx) = mpsc::unbounded_channel();
+    let ice_local_rx = Arc::new(Mutex::new(ice_local_rx));
+
+    {
+        let ice_local_tx = ice_local_tx.clone();
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let ice_local_tx = ice_local_tx.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    if let Ok(init) = candidate.to_json() {
+                        if let Ok(json) = serde_json::to_string(&init) {
+                            let _ = ice_local_tx.send(json);
+                        }
+                    }
+                }
+            })
+        }));
+    }
 
     {
         let data_channel = Arc::clone(&data_channel);
@@ -222,6 +284,7 @@ async fn new_peer(ice: &IceConfig) -> Result<Inner> {
         data_channel,
         incoming_tx,
         incoming_rx: Some(incoming_rx),
+        ice_local_rx,
     })
 }
 
@@ -252,14 +315,18 @@ async fn wait_for_incoming_data_channel(inner: &Inner) -> Result<()> {
     Err(anyhow!("timed out waiting for incoming data channel"))
 }
 
-async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>) -> Result<()> {
-    for _ in 0..100 {
+async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>, ice: &IceConfig) -> Result<()> {
+    let needs_turn = !ice.turn_urls.is_empty();
+    let max_wait = if needs_turn { 600 } else { 100 };
+    for _ in 0..max_wait {
         if pc.ice_gathering_state() == RTCIceGatheringState::Complete {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    // Best-effort: proceed even if gathering hasn't formally completed
+    if needs_turn {
+        anyhow::bail!("ICE gathering incomplete (TURN candidates may be missing)");
+    }
     Ok(())
 }
 
@@ -299,7 +366,7 @@ pub async fn run_local_demo(ice: &IceConfig) -> Result<(PeerConnection, PeerConn
         .set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&offerer_pc).await?;
+    wait_for_ice_gathering(&offerer_pc, ice).await?;
     let offer_sdp = offerer_pc
         .local_description()
         .await
@@ -319,7 +386,7 @@ pub async fn run_local_demo(ice: &IceConfig) -> Result<(PeerConnection, PeerConn
         .set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&answerer_pc).await?;
+    wait_for_ice_gathering(&answerer_pc, ice).await?;
     let answer_sdp = answerer_pc
         .local_description()
         .await
@@ -354,7 +421,7 @@ pub async fn run_answerer_role(ice: &IceConfig, offer_sdp: &str) -> Result<(Peer
     pc.set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&pc).await?;
+    wait_for_ice_gathering(&pc, ice).await?;
     let answer_sdp = pc
         .local_description()
         .await
@@ -379,7 +446,7 @@ pub async fn run_offerer_role(ice: &IceConfig) -> Result<(PeerConnection, String
     pc.set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&pc).await?;
+    wait_for_ice_gathering(&pc, ice).await?;
     let offer_sdp = pc
         .local_description()
         .await
@@ -388,7 +455,6 @@ pub async fn run_offerer_role(ice: &IceConfig) -> Result<(PeerConnection, String
 
     Ok((inner.into_peer_connection(), offer_sdp))
 }
-
 
 /// Connect using pre-exchanged SDP files (matched offer + answer pair).
 pub async fn connect_from_sdps(

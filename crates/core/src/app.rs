@@ -63,6 +63,13 @@ pub struct AppSnapshot {
 struct PendingOffer {
     contact_id: String,
     peer: PeerConnection,
+    seen_ice: HashSet<String>,
+}
+
+struct PendingAnswer {
+    contact_id: String,
+    peer: PeerConnection,
+    seen_ice: HashSet<String>,
 }
 
 struct ActiveChat {
@@ -78,6 +85,7 @@ pub struct CorgigramApp {
     identity: Option<Identity>,
     active: Arc<Mutex<Option<ActiveChat>>>,
     pending_offer: Arc<Mutex<Option<PendingOffer>>>,
+    pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
 }
 
 impl CorgigramApp {
@@ -100,6 +108,7 @@ impl CorgigramApp {
             identity: None,
             active: Arc::new(Mutex::new(None)),
             pending_offer: Arc::new(Mutex::new(None)),
+            pending_answer: Arc::new(Mutex::new(None)),
         };
         app.load_identity()?;
         app.reconcile_stale_outbox()?;
@@ -397,9 +406,10 @@ impl CorgigramApp {
         if offer.auto_signaling {
             let me = self.my_user_id()?;
             let fb = self.firebase()?;
-            let answer = fb.wait_answer(&me, contact_id, 120).await?;
+            let answer = self.wait_answer_with_ice(&me, contact_id, 120).await?;
             self.connect_finish(contact_id, &answer).await?;
             fb.clear_signaling(&me).await.ok();
+            fb.clear_signaling(contact_id).await.ok();
             self.sync_mailbox(contact_id).await?;
             self.flush_outbox(contact_id).await?;
             return Ok(ConnectAutoResult {
@@ -411,6 +421,26 @@ impl CorgigramApp {
             contact_id: contact_id.to_string(),
             connected: false,
         })
+    }
+
+    async fn wait_answer_with_ice(&self, me: &str, contact_id: &str, timeout_secs: u64) -> Result<String> {
+        let fb = self.firebase()?;
+        for _ in 0..timeout_secs * 2 {
+            {
+                let mut pending = self.pending_offer.lock().await;
+                if let Some(p) = pending.as_mut() {
+                    if p.contact_id == contact_id {
+                        self.exchange_ice(&p.peer, me, contact_id, &mut p.seen_ice)
+                            .await?;
+                    }
+                }
+            }
+            if let Some(answer) = fb.fetch_answer(me, contact_id).await? {
+                return Ok(answer.sdp);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::bail!("timed out waiting for firebase answer")
     }
 
     pub async fn connect_offer(&self, contact_id: &str) -> Result<ConnectOfferResult> {
@@ -427,6 +457,7 @@ impl CorgigramApp {
         *self.pending_offer.lock().await = Some(PendingOffer {
             contact_id: contact_id.to_string(),
             peer,
+            seen_ice: HashSet::new(),
         });
 
         Ok(ConnectOfferResult {
@@ -458,7 +489,15 @@ impl CorgigramApp {
             anyhow::bail!("pending offer is for another contact");
         }
 
-        pending_offer.peer.set_remote_answer(answer_sdp).await?;
+        pending_offer.peer.apply_remote_answer(answer_sdp).await?;
+        let me = self.my_user_id()?;
+        self.connect_with_ice(
+            &pending_offer.peer,
+            &me,
+            contact_id,
+            &mut pending_offer.seen_ice,
+        )
+        .await?;
         let session = self
             .run_session_handshake_as_initiator(&mut pending_offer.peer, identity, &contact.bundle)
             .await?;
@@ -479,14 +518,16 @@ impl CorgigramApp {
             .context("contact not found")?;
 
         let (mut peer, answer_sdp) = run_answerer_role(&self.ice_config(), offer_sdp).await?;
+        let mut seen_ice = HashSet::new();
+        let me = self.my_user_id()?;
 
         if self.config.firebase_configured() {
-            let me = self.my_user_id()?;
             self.firebase()?
                 .publish_answer(contact_id, &me, &answer_sdp)
                 .await?;
         }
 
+        self.connect_with_ice(&peer, &me, contact_id, &mut seen_ice).await?;
         peer.wait_ready().await?;
         let session = self
             .run_session_handshake_as_responder(&mut peer, identity, &contact.bundle)
@@ -504,12 +545,114 @@ impl CorgigramApp {
         })
     }
 
+    async fn begin_connect_answer(&self, offer_sdp: &str, contact_id: &str) -> Result<()> {
+        if self.pending_answer.lock().await.is_some() {
+            return Ok(());
+        }
+        let (peer, answer_sdp) = run_answerer_role(&self.ice_config(), offer_sdp).await?;
+        if self.config.firebase_configured() {
+            let me = self.my_user_id()?;
+            self.firebase()?
+                .publish_answer(contact_id, &me, &answer_sdp)
+                .await?;
+        }
+        *self.pending_answer.lock().await = Some(PendingAnswer {
+            contact_id: contact_id.to_string(),
+            peer,
+            seen_ice: HashSet::new(),
+        });
+        Ok(())
+    }
+
+    async fn advance_pending_answer(&self) -> Result<Option<String>> {
+        let mut pending = self.pending_answer.lock().await;
+        let Some(mut answer) = pending.take() else {
+            return Ok(None);
+        };
+        let contact_id = answer.contact_id.clone();
+        drop(pending);
+
+        let me = self.my_user_id()?;
+        self.exchange_ice(&answer.peer, &me, &contact_id, &mut answer.seen_ice)
+            .await?;
+
+        if !answer.peer.is_connected() {
+            *self.pending_answer.lock().await = Some(answer);
+            return Ok(None);
+        }
+
+        if answer.peer.wait_ready().await.is_err() {
+            *self.pending_answer.lock().await = Some(answer);
+            return Ok(None);
+        }
+
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(&contact_id)?
+            .context("contact not found")?;
+        let session = self
+            .run_session_handshake_as_responder(&mut answer.peer, identity, &contact.bundle)
+            .await?;
+
+        *self.active.lock().await = Some(ActiveChat {
+            contact_id: contact_id.clone(),
+            peer: answer.peer,
+            session,
+        });
+        self.firebase()?.clear_signaling(&me).await.ok();
+        Ok(Some(contact_id))
+    }
+
+    async fn exchange_ice(
+        &self,
+        peer: &PeerConnection,
+        me: &str,
+        peer_id: &str,
+        seen: &mut HashSet<String>,
+    ) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let fb = self.firebase()?;
+        for candidate in peer.drain_local_candidates().await {
+            let id = uuid::Uuid::new_v4().to_string();
+            fb.publish_ice_candidate(peer_id, me, &id, &candidate).await?;
+        }
+        for (id, candidate) in fb.list_ice_candidates(me, peer_id).await? {
+            if seen.insert(id) {
+                peer.add_remote_candidate(&candidate).await.ok();
+            }
+        }
+        Ok(())
+    }
+
+    async fn connect_with_ice(
+        &self,
+        peer: &PeerConnection,
+        me: &str,
+        peer_id: &str,
+        seen: &mut HashSet<String>,
+    ) -> Result<()> {
+        for _ in 0..450 {
+            self.exchange_ice(peer, me, peer_id, seen).await?;
+            if peer.is_connected() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        anyhow::bail!("timed out waiting for peer connection")
+    }
+
     /// Poll Firebase for incoming WebRTC offers and auto-answer known contacts.
     pub async fn poll_signaling(&self) -> Result<Option<String>> {
         if !self.config.firebase_configured() {
             return Ok(None);
         }
         if self.active.lock().await.is_some() {
+            return Ok(None);
+        }
+        if self.pending_answer.lock().await.is_some() {
             return Ok(None);
         }
 
@@ -530,10 +673,8 @@ impl CorgigramApp {
             }
         }
 
-        self.connect_answer(&offer.sdp, &offer.from).await?;
+        self.begin_connect_answer(&offer.sdp, &offer.from).await?;
         self.storage.set_meta(&last_key, &offer.ts.to_string())?;
-        fb.clear_signaling(&me).await.ok();
-        self.sync_mailbox(&offer.from).await?;
         Ok(Some(offer.from))
     }
 
@@ -687,6 +828,20 @@ impl CorgigramApp {
 
         if let Some(contact_id) = self.poll_signaling().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
+        }
+
+        if let Some(contact_id) = self.advance_pending_answer().await? {
+            received.extend(self.sync_mailbox(&contact_id).await?);
+        }
+
+        if let Ok(me) = self.my_user_id() {
+            let mut pending = self.pending_offer.lock().await;
+            if let Some(offer) = pending.as_mut() {
+                let contact_id = offer.contact_id.clone();
+                let _ = self
+                    .exchange_ice(&offer.peer, &me, &contact_id, &mut offer.seen_ice)
+                    .await;
+            }
         }
 
         for contact in self.storage.list_contacts()? {

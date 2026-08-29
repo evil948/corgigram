@@ -53,19 +53,19 @@ impl IceConfig {
     pub fn rtc_ice_servers(&self) -> Vec<RTCIceServer> {
         let mut servers = Vec::new();
 
-        if !self.stun_urls.is_empty() {
+        for url in &self.stun_urls {
             servers.push(RTCIceServer {
-                urls: self.stun_urls.clone(),
-                ..Default::default()
+                urls: vec![url.clone()],
+                username: String::new(),
+                credential: String::new(),
             });
         }
 
-        if !self.turn_urls.is_empty() {
+        for url in &self.turn_urls {
             servers.push(RTCIceServer {
-                urls: self.turn_urls.clone(),
+                urls: vec![url.clone()],
                 username: self.turn_username.clone().unwrap_or_default(),
                 credential: self.turn_credential.clone().unwrap_or_default(),
-                ..Default::default()
             });
         }
 

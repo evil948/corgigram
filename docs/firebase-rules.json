@@ -9,6 +9,14 @@
         "answer": {
           ".read": true,
           ".write": true
+        },
+        "ice": {
+          "$fromUserId": {
+            "$candidateId": {
+              ".read": true,
+              ".write": true
+            }
+          }
         }
       }
     },

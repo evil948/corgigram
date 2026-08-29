@@ -128,7 +128,56 @@ impl FirebaseSignaling {
             .delete(self.url(&format!("signaling/{user_id}/answer")))
             .send()
             .await;
+        let _ = self
+            .client
+            .delete(self.url(&format!("signaling/{user_id}/ice")))
+            .send()
+            .await;
         Ok(())
+    }
+
+    pub async fn publish_ice_candidate(
+        &self,
+        target_user_id: &str,
+        from_user_id: &str,
+        candidate_id: &str,
+        candidate_json: &str,
+    ) -> Result<()> {
+        self.client
+            .put(self.url(&format!(
+                "signaling/{target_user_id}/ice/{from_user_id}/{candidate_id}"
+            )))
+            .json(&json!({
+                "c": candidate_json,
+                "ts": chrono::Utc::now().timestamp()
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn list_ice_candidates(
+        &self,
+        user_id: &str,
+        from_user_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let url = self.url(&format!("signaling/{user_id}/ice/{from_user_id}"));
+        let resp = self.client.get(&url).send().await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(vec![]);
+        }
+        let value: serde_json::Value = resp.error_for_status()?.json().await?;
+        let Some(obj) = value.as_object() else {
+            return Ok(vec![]);
+        };
+        let mut out = Vec::new();
+        for (id, entry) in obj {
+            if let Some(c) = entry.get("c").and_then(|v| v.as_str()) {
+                out.push((id.clone(), c.to_string()));
+            }
+        }
+        Ok(out)
     }
 
     pub async fn publish_mailbox(

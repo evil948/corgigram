@@ -3,7 +3,6 @@ const listen = window.__TAURI__?.event?.listen ?? (async () => () => {});
 
 let snapshot = null;
 let activeContactId = null;
-let connecting = false;
 let pendingOnboardAvatar = null;
 let pendingProfileAvatar = null;
 let profileRemoveAvatar = false;
@@ -124,13 +123,18 @@ async function refresh() {
 
 function updateConnectButton() {
   const btn = $("btn-connect");
+  if (!btn) return;
   if (snapshot.firebase_configured) {
-    btn.textContent = "Подключиться";
-    btn.title = "Автоподключение через Firebase";
-  } else {
-    btn.textContent = "Подключиться (SDP)";
-    btn.title = "Ручной обмен SDP";
+    btn.classList.add("hidden");
+    return;
   }
+  btn.classList.remove("hidden");
+  btn.textContent = "Подключиться (SDP)";
+  btn.title = "Ручной обмен SDP";
+}
+
+async function setWantedContact(contactId) {
+  await invoke("set_wanted_contact", { contactId: contactId ?? null });
 }
 
 function renderContacts() {
@@ -163,6 +167,7 @@ async function selectContact(id, name, avatarUrl = null) {
   show($("chat-view"));
   $("chat-title").textContent = name;
   setAvatarEl($("chat-avatar"), name, avatarUrl);
+  await setWantedContact(id);
   await refreshChatStatus();
   await loadMessages();
   if (snapshot.firebase_configured) {
@@ -174,9 +179,13 @@ async function selectContact(id, name, avatarUrl = null) {
 async function refreshChatStatus() {
   snapshot = await invoke("get_snapshot");
   const connected = snapshot.connected_contact_id === activeContactId;
+  const connecting = snapshot.connecting_contact_id === activeContactId;
   $("chat-status").innerHTML = connected
     ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · онлайн`
-    : `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${snapshot.firebase_configured ? "offline mailbox" : "не подключено"}`;
+    : connecting
+      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · подключение…`
+      : `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${snapshot.firebase_configured ? "offline mailbox" : "не подключено"}`;
+  updateConnectButton();
   updateOutboxBadge();
   updateProfileFooter();
 }
@@ -337,49 +346,14 @@ $("btn-save-profile").onclick = async () => {
 };
 
 $("btn-connect").onclick = async () => {
-  if (!activeContactId || connecting) return;
-  connecting = true;
-  const btn = $("btn-connect");
-  const prevText = btn.textContent;
-  btn.textContent = "Подключение…";
-  btn.disabled = true;
+  if (!activeContactId || !snapshot || snapshot.firebase_configured) return;
   try {
-    if (snapshot.firebase_configured) {
-      const result = await invoke("connect_auto", { contactId: activeContactId });
-      if (result.connected) {
-        await refresh();
-        const c = snapshot.contacts.find(x => x.user_id === activeContactId);
-        if (c) await selectContact(c.user_id, c.display_name, c.avatar_data_url);
-      } else {
-        alert("Не удалось автоподключиться за 2 мин. Сообщения через offline mailbox работают без подключения.");
-      }
-    } else {
-      const result = await invoke("connect_offer", { contactId: activeContactId });
-      $("input-offer-sdp").value = result.offer_sdp;
-      $("input-answer-sdp").value = "";
-      openModal("modal-connect");
-    }
+    const result = await invoke("connect_offer", { contactId: activeContactId });
+    $("input-offer-sdp").value = result.offer_sdp;
+    $("input-answer-sdp").value = "";
+    openModal("modal-connect");
   } catch (e) {
-    const msg = String(e);
-    let extra = "";
-    try {
-      const d = await invoke("diagnose_connect", { contactId: activeContactId });
-      extra = `\n\nДиагностика:\n• answer от друга: ${d.has_firebase_answer_from_contact ? "да" : "нет"}\n• ICE от вас → друг: ${d.local_ice_to_contact}\n• ICE от друга → вам: ${d.remote_ice_from_contact}\n• TURN доступен: ${d.turn_fetched ? "да" : "нет"}`;
-    } catch (_) {}
-    if (msg.includes("firebase answer")) {
-      alert("Друг не ответил на подключение за 2 мин.\n\nУбедитесь, что у друга открыт Corgigram с новой версией (.exe из GitHub Actions), и попробуйте снова.\n\nOffline-сообщения работают без «Подключиться»." + extra);
-    } else if (msg.includes("peer connection") || msg.includes("data channel")) {
-      alert("Live-подключение не прошло (NAT/TURN).\n\nОба клиента должны быть на последней версии. Offline-сообщения работают без «Подключиться»." + extra);
-    } else if (msg.includes("timed out")) {
-      alert("Подключение не успело завершиться.\n\nOffline-сообщения работают без «Подключиться»." + extra);
-    } else {
-      alert("Ошибка: " + e + extra);
-    }
-  } finally {
-    connecting = false;
-    btn.disabled = false;
-    btn.textContent = prevText;
-    updateConnectButton();
+    alert("Ошибка: " + e);
   }
 };
 

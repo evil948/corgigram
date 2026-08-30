@@ -11,6 +11,7 @@ fn main() {
                 "sync_avatars",
                 "get_messages",
                 "get_safety_number",
+                "set_wanted_contact",
                 "connect_offer",
                 "connect_auto",
                 "diagnose_connect",

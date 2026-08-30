@@ -114,6 +114,17 @@ async fn get_safety_number(state: State<'_, AppState>, contact_id: String) -> Re
 }
 
 #[tauri::command]
+async fn set_wanted_contact(state: State<'_, AppState>, contact_id: Option<String>) -> Result<(), String> {
+    state
+        .app
+        .read()
+        .await
+        .set_wanted_contact(contact_id)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn connect_offer(state: State<'_, AppState>, contact_id: String) -> Result<ConnectOfferResult, String> {
     state
         .app
@@ -280,6 +291,7 @@ pub fn run() {
             sync_avatars,
             get_messages,
             get_safety_number,
+            set_wanted_contact,
             connect_offer,
             connect_auto,
             diagnose_connect,
@@ -310,6 +322,7 @@ pub fn run() {
                 let app = sync_app.read().await;
                 let _ = app.sync_directory().await;
                 let _ = app.sync_avatar_downloads().await;
+                app.prefetch_turn().await;
             });
             let avatar_poll = poll_app.clone();
             let avatar_handle = app.handle().clone();
@@ -325,7 +338,7 @@ pub fn run() {
             let message_poll = poll_app.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     let incoming = message_poll.read().await.poll_incoming().await.unwrap_or_default();
                     for msg in incoming {
                         let _ = poll_handle.emit("message-received", &msg);
@@ -336,7 +349,7 @@ pub fn run() {
             let ice_poll = poll_app.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     let app = ice_poll.read().await;
                     let _ = app.exchange_pending_ice().await;
                 }

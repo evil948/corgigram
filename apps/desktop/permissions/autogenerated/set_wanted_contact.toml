@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-wanted-contact"
+description = "Enables the set_wanted_contact command without any pre-configured scope."
+commands.allow = ["set_wanted_contact"]
+
+[[permission]]
+identifier = "deny-set-wanted-contact"
+description = "Denies the set_wanted_contact command without any pre-configured scope."
+commands.deny = ["set_wanted_contact"]

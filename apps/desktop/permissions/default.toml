@@ -12,6 +12,7 @@ permissions = [
   "allow-sync-avatars",
   "allow-get-messages",
   "allow-get-safety-number",
+  "allow-set-wanted-contact",
   "allow-connect-offer",
   "allow-connect-auto",
   "allow-diagnose-connect",

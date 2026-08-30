@@ -68,6 +68,7 @@ pub struct AppSnapshot {
     pub profile: Option<ProfileInfo>,
     pub contacts: Vec<ContactRecord>,
     pub connected_contact_id: Option<String>,
+    pub connecting_contact_id: Option<String>,
     pub firebase_configured: bool,
     pub firebase_database_url: String,
     pub firebase_database_url_override: Option<String>,
@@ -101,6 +102,7 @@ pub struct CorgigramApp {
     active: Arc<Mutex<Option<ActiveChat>>>,
     /// Updated alongside `active` so snapshot works while poll holds the async lock.
     live_contact_id: Arc<RwLock<Option<String>>>,
+    wanted_contact_id: Arc<RwLock<Option<String>>>,
     pending_offer: Arc<Mutex<Option<PendingOffer>>>,
     pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
 }
@@ -125,6 +127,7 @@ impl CorgigramApp {
             identity: None,
             active: Arc::new(Mutex::new(None)),
             live_contact_id: Arc::new(RwLock::new(None)),
+            wanted_contact_id: Arc::new(RwLock::new(None)),
             pending_offer: Arc::new(Mutex::new(None)),
             pending_answer: Arc::new(Mutex::new(None)),
         };
@@ -151,6 +154,80 @@ impl CorgigramApp {
         *self.active.lock().await = Some(chat);
     }
 
+    fn connecting_contact_id(&self) -> Option<String> {
+        if self
+            .live_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .is_some()
+        {
+            return None;
+        }
+        if let Ok(pending) = self.pending_offer.try_lock() {
+            if let Some(p) = pending.as_ref() {
+                return Some(p.contact_id.clone());
+            }
+        }
+        if let Ok(pending) = self.pending_answer.try_lock() {
+            if let Some(p) = pending.as_ref() {
+                return Some(p.contact_id.clone());
+            }
+        }
+        None
+    }
+
+    /// UI: open chat — background poll will start/complete WebRTC for this contact.
+    pub async fn set_wanted_contact(&self, contact_id: Option<String>) {
+        if let Ok(mut wanted) = self.wanted_contact_id.write() {
+            *wanted = contact_id.clone();
+        }
+        let Some(wanted_id) = contact_id else {
+            return;
+        };
+        if self
+            .live_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .as_deref()
+            == Some(wanted_id.as_str())
+        {
+            return;
+        }
+        {
+            let current = self
+                .live_contact_id
+                .read()
+                .ok()
+                .and_then(|g| g.clone());
+            if current.as_deref() != Some(wanted_id.as_str()) && current.is_some() {
+                self.disconnect_active().await;
+                *self.pending_offer.lock().await = None;
+            }
+        }
+        {
+            let mut pending = self.pending_offer.lock().await;
+            if let Some(p) = pending.as_ref() {
+                if p.contact_id != wanted_id {
+                    *pending = None;
+                }
+            }
+        }
+        let _ = self.ensure_connect_started(&wanted_id).await;
+    }
+
+    pub async fn prefetch_turn(&self) {
+        let _ = self.build_ice_config().await;
+    }
+
+    async fn disconnect_active(&self) {
+        if let Ok(mut id) = self.live_contact_id.write() {
+            *id = None;
+        }
+        *self.active.lock().await = None;
+    }
+
     pub fn update_config(&mut self, config: AppConfig) -> Result<()> {
         let config = config.with_normalized_firebase_url();
         config.save(&self.data_dir.join("config.json"))?;
@@ -168,6 +245,7 @@ impl CorgigramApp {
                 .read()
                 .ok()
                 .and_then(|g| g.clone()),
+            connecting_contact_id: self.connecting_contact_id(),
             firebase_configured: self.config.firebase_configured(),
             firebase_database_url: self.config.effective_firebase_database_url(),
             firebase_database_url_override: self.config.firebase_database_url_override(),
@@ -475,7 +553,7 @@ impl CorgigramApp {
         if offer.auto_signaling {
             let me = self.my_user_id()?;
             let fb = self.firebase()?;
-            let answer = self.wait_answer_with_ice(&me, contact_id, 120).await?;
+            let answer = self.wait_answer_with_ice(&me, contact_id, 90).await?;
             self.connect_finish(contact_id, &answer).await?;
             fb.clear_signaling(&me).await.ok();
             fb.clear_signaling(contact_id).await.ok();
@@ -494,7 +572,7 @@ impl CorgigramApp {
 
     async fn wait_answer_with_ice(&self, me: &str, contact_id: &str, timeout_secs: u64) -> Result<String> {
         let fb = self.firebase()?;
-        for _ in 0..timeout_secs * 2 {
+        for _ in 0..(timeout_secs * 5) {
             {
                 let mut pending = self.pending_offer.lock().await;
                 if let Some(p) = pending.as_mut() {
@@ -508,9 +586,99 @@ impl CorgigramApp {
             if let Some(answer) = fb.fetch_answer(me, contact_id).await? {
                 return Ok(answer.sdp);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         anyhow::bail!("timed out waiting for firebase answer")
+    }
+
+    async fn ensure_connect_started(&self, contact_id: &str) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        if self
+            .live_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .as_deref()
+            == Some(contact_id)
+        {
+            return Ok(());
+        }
+        if self.pending_answer.lock().await.is_some() {
+            return Ok(());
+        }
+        {
+            let pending = self.pending_offer.lock().await;
+            if let Some(p) = pending.as_ref() {
+                if p.contact_id == contact_id {
+                    return Ok(());
+                }
+                return Ok(());
+            }
+        }
+        if self.active.lock().await.is_some() {
+            return Ok(());
+        }
+        self.connect_offer(contact_id).await?;
+        Ok(())
+    }
+
+    async fn advance_pending_offer(&self) -> Result<Option<String>> {
+        let contact_id = {
+            let pending = self.pending_offer.lock().await;
+            let Some(offer) = pending.as_ref() else {
+                return Ok(None);
+            };
+            offer.contact_id.clone()
+        };
+
+        let me = self.my_user_id()?;
+        for _ in 0..5 {
+            {
+                let mut pending = self.pending_offer.lock().await;
+                let Some(ref mut offer) = pending.as_mut() else {
+                    return Ok(None);
+                };
+                if offer.contact_id != contact_id {
+                    return Ok(None);
+                }
+                self.exchange_ice(&offer.peer, &me, &contact_id, &mut offer.seen_ice)
+                    .await?;
+            }
+            if let Some(answer) = self.firebase()?.fetch_answer(&me, &contact_id).await? {
+                self.connect_finish(&contact_id, &answer.sdp).await?;
+                let fb = self.firebase()?;
+                fb.clear_signaling(&me).await.ok();
+                fb.clear_signaling(&contact_id).await.ok();
+                return Ok(Some(contact_id));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(None)
+    }
+
+    async fn maintain_wanted_connection(&self) -> Result<()> {
+        let wanted = self
+            .wanted_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone());
+        let Some(contact_id) = wanted else {
+            return Ok(());
+        };
+        if self
+            .live_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .as_deref()
+            == Some(contact_id.as_str())
+        {
+            return Ok(());
+        }
+        let _ = self.ensure_connect_started(&contact_id).await;
+        Ok(())
     }
 
     pub async fn connect_offer(&self, contact_id: &str) -> Result<ConnectOfferResult> {
@@ -593,7 +761,7 @@ impl CorgigramApp {
 
     async fn connect_with_ice_via_pending(&self, contact_id: &str) -> Result<()> {
         let me = self.my_user_id()?;
-        for _ in 0..600 {
+        for _ in 0..400 {
             {
                 let mut pending = self.pending_offer.lock().await;
                 let Some(ref mut pending_offer) = pending.as_mut() else {
@@ -602,7 +770,7 @@ impl CorgigramApp {
                 if pending_offer.contact_id != contact_id {
                     anyhow::bail!("pending offer is for another contact");
                 }
-                for _ in 0..3 {
+                for _ in 0..5 {
                     self.exchange_ice(
                         &pending_offer.peer,
                         &me,
@@ -615,7 +783,7 @@ impl CorgigramApp {
                     return Ok(());
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
         anyhow::bail!("timed out waiting for peer connection")
     }
@@ -784,14 +952,14 @@ impl CorgigramApp {
         peer_id: &str,
         seen: &mut HashSet<String>,
     ) -> Result<()> {
-        for _ in 0..600 {
-            for _ in 0..3 {
+        for _ in 0..400 {
+            for _ in 0..5 {
                 let _ = self.exchange_ice(peer, me, peer_id, seen).await;
             }
             if peer.is_connected() {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
         anyhow::bail!("timed out waiting for peer connection")
     }
@@ -978,11 +1146,17 @@ impl CorgigramApp {
     pub async fn poll_incoming(&self) -> Result<Vec<MessageRecord>> {
         let mut received = Vec::new();
 
+        let _ = self.maintain_wanted_connection().await;
+
         if let Some(contact_id) = self.poll_signaling().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
         }
 
         if let Some(contact_id) = self.advance_pending_answer().await? {
+            received.extend(self.sync_mailbox(&contact_id).await?);
+        }
+
+        if let Some(contact_id) = self.advance_pending_offer().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
         }
 

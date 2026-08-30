@@ -36,10 +36,18 @@ CI=true cargo tauri signer generate -w .tauri/updater.key -f --password ""
 
 ## Локальная release-сборка
 
+**Arch / CachyOS:** linuxdeploy падает на `failed to run linuxdeploy` — нужен `NO_STRIP=1`:
+
 ```bash
-export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri/updater.key)"
-cd apps/desktop
-cargo tauri build
+./scripts/build-appimage.sh
+```
+
+Или вручную:
+
+```bash
+export NO_STRIP=1
+export TAURI_SIGNING_PRIVATE_KEY="$(tr -d '\n' < .tauri/updater.key)"
+cd apps/desktop && cargo tauri build
 ```
 
 Артефакты: `target/release/bundle/appimage/` и `target/release/bundle/nsis/`.

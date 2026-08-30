@@ -41,6 +41,10 @@ jobs:
             patchelf \
             libssl-dev
 
+      - name: Install Tauri CLI
+        if: matrix.platform == 'ubuntu-22.04'
+        run: cargo install tauri-cli --locked
+
       - uses: tauri-apps/tauri-action@v0
         if: matrix.platform == 'ubuntu-22.04'
         env:

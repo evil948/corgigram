@@ -5,6 +5,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export NO_STRIP=1
 
+if ! cargo tauri --version >/dev/null 2>&1; then
+  echo "==> Installing Tauri CLI"
+  cargo install tauri-cli --locked
+fi
+
 cd "$ROOT/apps/desktop"
 cargo tauri build "$@"
 

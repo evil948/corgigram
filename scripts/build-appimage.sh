@@ -17,6 +17,12 @@ fi
 echo "==> Building AppImage (NO_STRIP=1 for Arch/CachyOS)"
 cargo tauri build
 
+APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)"
+if [ -n "$APPIMAGE" ]; then
+  echo "==> Patching AppImage for Wayland hosts"
+  "$ROOT/scripts/fix-appimage-wayland.sh" "$APPIMAGE"
+fi
+
 echo
 echo "Done:"
 ls -la "$ROOT/target/release/bundle/appimage/" 2>/dev/null || true

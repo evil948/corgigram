@@ -1,0 +1,8 @@
+[Desktop Entry]
+Categories=
+Exec=corgigram-desktop
+StartupWMClass=corgigram-desktop
+Icon=corgigram-desktop
+Name=Corgigram
+Terminal=false
+Type=Application

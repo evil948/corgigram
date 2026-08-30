@@ -61,6 +61,22 @@ cd apps/desktop && cargo tauri build
 
 Артефакты: `target/release/bundle/appimage/` и `target/release/bundle/nsis/`.
 
+## Серый/пустой экран в AppImage (Arch / CachyOS / Wayland)
+
+AppImage из CI упаковывает старый `libwayland-client` — на современном Mesa WebKit не рисует UI.
+
+**Быстрый обход для уже скачанного AppImage:**
+
+```bash
+LD_PRELOAD=/usr/lib/libwayland-client.so ./Corgigram_*.AppImage
+```
+
+**Правильно:** после `cargo tauri build` скрипт `./scripts/build-appimage.sh` автоматически вызывает `fix-appimage-wayland.sh`. Вручную:
+
+```bash
+./scripts/fix-appimage-wayland.sh target/release/bundle/appimage/Corgigram_*.AppImage
+```
+
 ## Endpoint обновлений
 
 `https://github.com/evil948/corgigram/releases/latest/download/latest.json`

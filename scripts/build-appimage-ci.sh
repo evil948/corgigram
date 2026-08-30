@@ -11,7 +11,8 @@ if ! cargo tauri --version >/dev/null 2>&1; then
 fi
 
 cd "$ROOT/apps/desktop"
-cargo tauri build "$@"
+# tauri-action invokes this script as: build-appimage-ci.sh build --target ...
+cargo tauri "$@"
 
 APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/*.AppImage | head -1)"
 "$ROOT/scripts/fix-appimage-wayland.sh" "$APPIMAGE"

@@ -24,7 +24,15 @@
 
 | Secret | Значение |
 |--------|----------|
-| `TAURI_SIGNING_PRIVATE_KEY` | **полное содержимое** файла `.tauri/updater.key` |
+| `TAURI_SIGNING_PRIVATE_KEY` | **одна строка** из файла `.tauri/updater.key` (скопируйте целиком, без переносов) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | пустая строка (ключ создан без пароля) |
+
+Установка через CLI:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < .tauri/updater.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
+```
 
 Пересоздать ключи:
 
@@ -46,7 +54,8 @@ CI=true cargo tauri signer generate -w .tauri/updater.key -f --password ""
 
 ```bash
 export NO_STRIP=1
-export TAURI_SIGNING_PRIVATE_KEY="$(tr -d '\n' < .tauri/updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri/updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 cd apps/desktop && cargo tauri build
 ```
 

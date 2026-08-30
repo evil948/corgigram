@@ -10,7 +10,8 @@ export NO_STRIP=1
 
 if [ -f "$ROOT/.tauri/updater.key" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   export TAURI_SIGNING_PRIVATE_KEY
-  TAURI_SIGNING_PRIVATE_KEY="$(tr -d '\n' < "$ROOT/.tauri/updater.key")"
+  TAURI_SIGNING_PRIVATE_KEY="$(cat "$ROOT/.tauri/updater.key")"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 fi
 
 echo "==> Building AppImage (NO_STRIP=1 for Arch/CachyOS)"

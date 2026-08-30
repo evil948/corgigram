@@ -7,7 +7,8 @@ E2E-мессенджер для 2–5 человек. Дизайн — **Telegra
 **Сборка с автообновлением (AppImage / NSIS installer):**
 
 ```bash
-export TAURI_SIGNING_PRIVATE_KEY="$(tr -d '\n' < .tauri/updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri/updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 ./scripts/build-appimage.sh
 ```
 

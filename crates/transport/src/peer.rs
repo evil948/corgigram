@@ -7,6 +7,7 @@ use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -63,6 +64,13 @@ impl PeerConnection {
             self.pc.ice_connection_state(),
             RTCIceConnectionState::Connected | RTCIceConnectionState::Completed
         )
+    }
+
+    pub async fn is_data_channel_open(&self) -> bool {
+        let guard = self.data_channel.lock().await;
+        guard
+            .as_ref()
+            .is_some_and(|dc| dc.ready_state() == RTCDataChannelState::Open)
     }
 
     pub async fn add_remote_candidate(&self, candidate_json: &str) -> Result<()> {

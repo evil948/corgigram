@@ -250,14 +250,28 @@ impl CorgigramApp {
                 .and_then(|g| g.clone());
             if current.as_deref() != Some(wanted_id.as_str()) && current.is_some() {
                 self.disconnect_active().await;
-                *self.pending_offer.lock().await = None;
+                if let Some(mut offer) = self.pending_offer.lock().await.take() {
+                    offer.peer.close().await;
+                }
+            }
+        }
+        {
+            let mut pending = self.pending_answer.lock().await;
+            if let Some(p) = pending.as_ref() {
+                if p.contact_id != wanted_id {
+                    if let Some(mut old) = pending.take() {
+                        old.peer.close().await;
+                    }
+                }
             }
         }
         {
             let mut pending = self.pending_offer.lock().await;
             if let Some(p) = pending.as_ref() {
                 if p.contact_id != wanted_id {
-                    *pending = None;
+                    if let Some(mut old) = pending.take() {
+                        old.peer.close().await;
+                    }
                 }
             }
         }
@@ -1040,8 +1054,10 @@ impl CorgigramApp {
         {
             return Ok(());
         }
-        if self.pending_answer.lock().await.is_some() {
-            return Ok(());
+        if let Some(p) = self.pending_answer.lock().await.as_ref() {
+            if p.contact_id == contact_id {
+                return Ok(());
+            }
         }
         {
             let mut pending = self.pending_offer.lock().await;
@@ -1191,6 +1207,8 @@ impl CorgigramApp {
             anyhow::bail!("no pending offer");
         };
 
+        pending_offer.peer.wait_ready().await?;
+
         let session = self
             .run_session_handshake_as_initiator(&mut pending_offer.peer, identity, &contact.bundle)
             .await?;
@@ -1324,7 +1342,7 @@ impl CorgigramApp {
             return Ok(None);
         }
 
-        if answer.peer.wait_ready().await.is_err() {
+        if !answer.peer.is_data_channel_open().await {
             return Ok(None);
         }
 
@@ -1475,7 +1493,9 @@ impl CorgigramApp {
             if let Some(p) = pending.as_ref() {
                 if p.contact_id == offer.from {
                     if !should_initiate_offer(&me, &offer.from) {
-                        *pending = None;
+                        if let Some(mut old) = pending.take() {
+                            old.peer.close().await;
+                        }
                     } else {
                         return Ok(None);
                     }
@@ -2084,6 +2104,34 @@ async fn recv_bytes(peer: &mut PeerConnection, secs: u64) -> Result<Vec<u8>> {
         .await
         .context("timeout")?
         .context("connection closed")
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::{glare_key, should_initiate_offer};
+
+    #[test]
+    fn glare_key_is_case_insensitive() {
+        assert_eq!(glare_key("Alice"), glare_key("alice"));
+        assert_eq!(glare_key("BOB"), glare_key("bob"));
+    }
+
+    #[test]
+    fn should_initiate_offer_uses_lexicographic_order() {
+        assert!(should_initiate_offer("alice", "bob"));
+        assert!(!should_initiate_offer("bob", "alice"));
+        assert!(should_initiate_offer("alice", "Alice"));
+    }
+
+    #[test]
+    fn should_initiate_offer_is_deterministic_for_pair() {
+        let a = "kris";
+        let b = "mike";
+        assert_ne!(
+            should_initiate_offer(a, b),
+            should_initiate_offer(b, a)
+        );
+    }
 }
 
 pub type SharedApp = Arc<tokio::sync::RwLock<CorgigramApp>>;

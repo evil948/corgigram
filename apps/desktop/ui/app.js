@@ -7,6 +7,7 @@ let pendingOnboardAvatar = null;
 let pendingProfileAvatar = null;
 let profileRemoveAvatar = false;
 let pendingAttachments = [];
+let sendInFlight = false;
 const avatarCache = new Map();
 let refreshTimer = null;
 let loadingOlder = false;
@@ -673,6 +674,7 @@ function appendMessage(m, scroll = true, prepend = false) {
   ensureDateSeparator(box, m.created_at);
   const row = document.createElement("div");
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
+  if (m.direction === "out") row.classList.add("msg-enter-out");
   row.dataset.msgId = m.id;
   row.dataset.createdAt = m.created_at;
   const pending = isPendingStatus(m.status);
@@ -901,7 +903,7 @@ $("btn-safety").onclick = async () => {
 async function readFileAsBase64(file) {
   const maxBytes = 20 * 1024 * 1024;
   if (file.size > maxBytes) {
-    throw new Error(`«${file.name}» больше 20 МБ`);
+    throw new Error(`«${file.name || "файл"}» больше 20 МБ`);
   }
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
@@ -910,20 +912,69 @@ async function readFileAsBase64(file) {
   return btoa(binary);
 }
 
+function pasteFileName(file, index) {
+  if (file.name) return file.name;
+  const ext = (file.type || "application/octet-stream").split("/")[1] || "bin";
+  return `clipboard-${Date.now()}-${index}.${ext}`;
+}
+
+async function addAttachmentsFromFiles(files) {
+  let added = false;
+  for (const file of files) {
+    if (!file) continue;
+    if (pendingAttachments.length >= 10) {
+      alert("Максимум 10 файлов за раз");
+      break;
+    }
+    try {
+      const dataBase64 = await readFileAsBase64(file);
+      const previewUrl = (file.type || "").startsWith("image/") ? URL.createObjectURL(file) : null;
+      pendingAttachments.push({
+        name: pasteFileName(file, pendingAttachments.length),
+        mime: file.type || "application/octet-stream",
+        dataBase64,
+        previewUrl,
+      });
+      added = true;
+    } catch (err) {
+      alert(err.message || err);
+    }
+  }
+  if (added) {
+    renderAttachPreview();
+    $("message-input")?.focus();
+  }
+  return added;
+}
+
+function setSendInFlight(active) {
+  sendInFlight = active;
+  const btn = $("btn-send");
+  const compose = document.querySelector(".compose-inner");
+  const bar = document.querySelector(".compose-bar");
+  btn?.classList.toggle("is-sending", active);
+  btn?.setAttribute("aria-busy", active ? "true" : "false");
+  compose?.classList.toggle("is-sending", active);
+  bar?.classList.toggle("is-sending", active);
+}
+
 function renderAttachPreview() {
   const panel = $("attach-preview");
   if (!pendingAttachments.length) {
     hide(panel);
+    panel.classList.remove("is-visible");
     panel.innerHTML = "";
     updateComposePlaceholder();
     return;
   }
   show(panel);
+  panel.classList.add("is-visible");
   panel.innerHTML = "";
   updateComposePlaceholder();
   pendingAttachments.forEach((item, index) => {
     const chip = document.createElement("div");
     chip.className = "attach-chip";
+    chip.style.animationDelay = `${index * 40}ms`;
     if (item.previewUrl) {
       const img = document.createElement("img");
       img.src = item.previewUrl;
@@ -949,26 +1000,20 @@ $("btn-attach").onclick = () => $("input-attach").click();
 $("input-attach").onchange = async (e) => {
   const files = [...(e.target.files || [])];
   e.target.value = "";
-  for (const file of files) {
-    if (pendingAttachments.length >= 10) {
-      alert("Максимум 10 файлов за раз");
-      break;
-    }
-    try {
-      const dataBase64 = await readFileAsBase64(file);
-      const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
-      pendingAttachments.push({
-        name: file.name,
-        mime: file.type || "application/octet-stream",
-        dataBase64,
-        previewUrl,
-      });
-    } catch (err) {
-      alert(err.message || err);
-    }
-  }
-  renderAttachPreview();
+  await addAttachmentsFromFiles(files);
 };
+
+$("message-input").addEventListener("paste", async (e) => {
+  if (!activeContactId) return;
+  const items = [...(e.clipboardData?.items || [])];
+  const files = items
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (!files.length) return;
+  e.preventDefault();
+  await addAttachmentsFromFiles(files);
+});
 
 $("messages").addEventListener("scroll", () => {
   const box = $("messages");
@@ -985,8 +1030,9 @@ $("message-input").onkeydown = (e) => {
 
 async function sendCurrentMessage() {
   const text = $("message-input").value.trim();
-  if (!activeContactId) return;
+  if (!activeContactId || sendInFlight) return;
   if (!text && !pendingAttachments.length) return;
+  setSendInFlight(true);
   try {
     let msg;
     if (pendingAttachments.length) {
@@ -1009,6 +1055,8 @@ async function sendCurrentMessage() {
     debouncedRefresh();
   } catch (e) {
     alert("Не удалось отправить: " + e);
+  } finally {
+    setSendInFlight(false);
   }
 }
 

@@ -464,6 +464,139 @@ function fileIconSvg() {
   return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
 }
 
+function zoomIconSvg() {
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg>`;
+}
+
+function mediaCaptionText(m) {
+  const body = (m.body || "").trim();
+  const name = (m.attachment_name || "").trim();
+  if (!body) return null;
+  if (body === name) return null;
+  if (name && body.split(", ").every(part => name.includes(part))) return null;
+  return body;
+}
+
+function createMediaThumb(messageId, att, index) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "media-thumb-btn";
+  btn.setAttribute("aria-label", `Открыть ${att.name || "изображение"}`);
+  const img = document.createElement("img");
+  img.className = "media-thumb";
+  img.src = `data:${att.mime};base64,${att.data_base64}`;
+  img.alt = att.name || "";
+  img.loading = "lazy";
+  const hint = document.createElement("span");
+  hint.className = "media-thumb-hint";
+  hint.innerHTML = zoomIconSvg();
+  btn.append(img, hint);
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    openMediaViewer(messageId, index);
+  };
+  return btn;
+}
+
+function createFileChip(messageId, att, m) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "bubble-file media-file-btn";
+  btn.innerHTML = `${fileIconSvg()}<span>${escapeHtml(att.name || m.attachment_name || "Файл")}</span>`;
+  btn.onclick = () => openMediaViewer(messageId, 0);
+  return btn;
+}
+
+const mediaViewerState = {
+  messageId: null,
+  index: 0,
+  total: 0,
+};
+
+async function openMediaViewer(messageId, index = 0) {
+  const viewer = $("media-viewer");
+  if (!viewer) return;
+  let total = 1;
+  try {
+    total = await invoke("get_attachment_count", { messageId });
+  } catch {
+    total = 1;
+  }
+  mediaViewerState.messageId = messageId;
+  mediaViewerState.index = Math.min(index, Math.max(total - 1, 0));
+  mediaViewerState.total = Math.max(total, 1);
+  viewer.classList.remove("hidden");
+  viewer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("media-viewer-open");
+  await renderMediaViewerSlide();
+}
+
+function closeMediaViewer() {
+  const viewer = $("media-viewer");
+  if (!viewer) return;
+  viewer.classList.add("hidden");
+  viewer.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("media-viewer-open");
+  const img = $("media-viewer-img");
+  if (img) {
+    img.src = "";
+    img.classList.add("hidden");
+  }
+  mediaViewerState.messageId = null;
+}
+
+async function renderMediaViewerSlide() {
+  const { messageId, index, total } = mediaViewerState;
+  if (!messageId) return;
+
+  const title = $("media-viewer-title");
+  const counter = $("media-viewer-counter");
+  const prev = $("media-viewer-prev");
+  const next = $("media-viewer-next");
+  const img = $("media-viewer-img");
+  const filePanel = $("media-viewer-file");
+  const loading = $("media-viewer-loading");
+
+  img.classList.add("hidden");
+  filePanel.classList.add("hidden");
+  loading.classList.remove("hidden");
+
+  if (total > 1) {
+    counter.textContent = `${index + 1} / ${total}`;
+    counter.classList.remove("hidden");
+    prev.classList.toggle("hidden", index <= 0);
+    next.classList.toggle("hidden", index >= total - 1);
+  } else {
+    counter.classList.add("hidden");
+    prev.classList.add("hidden");
+    next.classList.add("hidden");
+  }
+
+  try {
+    const att = await invoke("read_attachment", { messageId, index });
+    title.textContent = att.name || "Медиа";
+    loading.classList.add("hidden");
+    if (att.mime?.startsWith("image/")) {
+      img.src = `data:${att.mime};base64,${att.data_base64}`;
+      img.alt = att.name || "";
+      img.classList.remove("hidden");
+    } else {
+      $("media-viewer-file-name").textContent = att.name || "Файл";
+      filePanel.classList.remove("hidden");
+    }
+  } catch (err) {
+    loading.textContent = "Не удалось загрузить";
+    console.warn("media viewer load failed", err);
+  }
+}
+
+function stepMediaViewer(delta) {
+  const nextIndex = mediaViewerState.index + delta;
+  if (nextIndex < 0 || nextIndex >= mediaViewerState.total) return;
+  mediaViewerState.index = nextIndex;
+  renderMediaViewerSlide();
+}
+
 async function loadMessageMedia(m, container) {
   const kind = m.kind || "text";
   if (kind === "text") return;
@@ -473,17 +606,11 @@ async function loadMessageMedia(m, container) {
       const att = await invoke("read_attachment", { messageId: m.id, index: 0 });
       if (kind === "image" && att.mime?.startsWith("image/")) {
         const wrap = document.createElement("div");
-        wrap.className = "bubble-media";
-        const img = document.createElement("img");
-        img.src = `data:${att.mime};base64,${att.data_base64}`;
-        img.alt = att.name || "изображение";
-        wrap.appendChild(img);
+        wrap.className = "bubble-media is-single";
+        wrap.appendChild(createMediaThumb(m.id, att, 0));
         container.prepend(wrap);
       } else {
-        const file = document.createElement("div");
-        file.className = "bubble-file";
-        file.innerHTML = `${fileIconSvg()}<span>${escapeHtml(att.name || m.attachment_name || "Файл")}</span>`;
-        container.prepend(file);
+        container.prepend(createFileChip(m.id, att, m));
       }
     } catch (err) {
       console.warn("attachment load failed", err);
@@ -493,21 +620,21 @@ async function loadMessageMedia(m, container) {
 
   if (kind === "album") {
     const grid = document.createElement("div");
-    grid.className = "bubble-media";
-    for (let i = 0; i < 4; i++) {
-      try {
+    grid.className = "bubble-media is-album";
+    let count = 0;
+    try {
+      const total = await invoke("get_attachment_count", { messageId: m.id });
+      for (let i = 0; i < total; i++) {
         const att = await invoke("read_attachment", { messageId: m.id, index: i });
         if (att.mime?.startsWith("image/")) {
-          const img = document.createElement("img");
-          img.src = `data:${att.mime};base64,${att.data_base64}`;
-          img.alt = att.name || `фото ${i + 1}`;
-          grid.appendChild(img);
+          grid.appendChild(createMediaThumb(m.id, att, i));
+          count++;
         }
-      } catch {
-        break;
       }
+    } catch (err) {
+      console.warn("album load failed", err);
     }
-    if (grid.childElementCount) container.prepend(grid);
+    if (count) container.prepend(grid);
   }
 }
 
@@ -525,8 +652,13 @@ function appendMessage(m, scroll = true, prepend = false) {
   const pending = isPendingStatus(m.status);
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  const caption = (m.kind && m.kind !== "text") ? m.body : escapeHtml(m.body);
-  bubble.innerHTML = `<div class="bubble-caption">${caption}</div>`;
+  const caption = mediaCaptionText(m);
+  if (caption) {
+    const cap = document.createElement("div");
+    cap.className = "bubble-caption";
+    cap.textContent = caption;
+    bubble.appendChild(cap);
+  }
   const inner = document.createElement("div");
   inner.appendChild(bubble);
   const timeEl = document.createElement("div");
@@ -546,6 +678,11 @@ function appendMessage(m, scroll = true, prepend = false) {
     row.classList.add("msg-has-media");
     pendingMediaByRow.set(row, m);
     mediaLoadObserver.observe(row);
+  } else {
+    const text = document.createElement("div");
+    text.className = "bubble-text";
+    text.textContent = m.body;
+    bubble.appendChild(text);
   }
   if (scroll) box.scrollTop = box.scrollHeight;
 }
@@ -905,6 +1042,17 @@ listen("contacts-updated", async () => {
     await refreshChatStatus(true);
     await syncActiveChatMessages();
   }
+});
+
+$("media-viewer-close")?.addEventListener("click", closeMediaViewer);
+$("media-viewer-backdrop")?.addEventListener("click", closeMediaViewer);
+$("media-viewer-prev")?.addEventListener("click", () => stepMediaViewer(-1));
+$("media-viewer-next")?.addEventListener("click", () => stepMediaViewer(1));
+document.addEventListener("keydown", (e) => {
+  if ($("media-viewer")?.classList.contains("hidden")) return;
+  if (e.key === "Escape") closeMediaViewer();
+  if (e.key === "ArrowLeft") stepMediaViewer(-1);
+  if (e.key === "ArrowRight") stepMediaViewer(1);
 });
 
 refresh();

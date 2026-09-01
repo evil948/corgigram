@@ -255,6 +255,18 @@ impl Storage {
         Ok(changed > 0)
     }
 
+    pub fn get_message_status(&self, id: &str) -> Result<Option<String>, StorageError> {
+        let conn = self.conn()?;
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(status)
+    }
+
     pub fn list_messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>, StorageError> {
         self.list_messages_page(contact_id, None, 10_000)
     }

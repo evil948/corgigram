@@ -182,6 +182,18 @@ async fn read_attachment(
 }
 
 #[tauri::command]
+async fn get_attachment_count(
+    state: State<'_, AppState>,
+    message_id: String,
+) -> Result<usize, String> {
+    Ok(state
+        .app
+        .read()
+        .await
+        .attachment_count(&message_id))
+}
+
+#[tauri::command]
 async fn get_safety_number(state: State<'_, AppState>, contact_id: String) -> Result<String, String> {
     state
         .app
@@ -406,6 +418,7 @@ pub fn run() {
             get_messages,
             get_messages_page,
             read_attachment,
+            get_attachment_count,
             get_safety_number,
             set_wanted_contact,
             connect_offer,

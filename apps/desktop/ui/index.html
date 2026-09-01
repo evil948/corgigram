@@ -240,6 +240,38 @@
     </div>
   </dialog>
 
+  <div id="media-viewer" class="media-viewer hidden" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Просмотр медиа">
+    <button type="button" id="media-viewer-backdrop" class="media-viewer-backdrop" aria-label="Закрыть"></button>
+    <div class="media-viewer-chrome">
+      <header class="media-viewer-toolbar">
+        <div class="media-viewer-meta">
+          <span id="media-viewer-title" class="media-viewer-title"></span>
+          <span id="media-viewer-counter" class="media-viewer-counter hidden"></span>
+        </div>
+        <button type="button" id="media-viewer-close" class="icon-btn media-viewer-close" aria-label="Закрыть">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </header>
+      <div class="media-viewer-stage">
+        <button type="button" id="media-viewer-prev" class="media-viewer-nav hidden" aria-label="Предыдущее">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <div class="media-viewer-frame">
+          <img id="media-viewer-img" class="media-viewer-img hidden" alt="" />
+          <div id="media-viewer-file" class="media-viewer-file hidden">
+            <div class="media-viewer-file-icon" aria-hidden="true"></div>
+            <p id="media-viewer-file-name" class="media-viewer-file-name"></p>
+            <p class="media-viewer-file-hint">Предпросмотр недоступен</p>
+          </div>
+          <div id="media-viewer-loading" class="media-viewer-loading hidden">Загрузка…</div>
+        </div>
+        <button type="button" id="media-viewer-next" class="media-viewer-nav hidden" aria-label="Следующее">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

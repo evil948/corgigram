@@ -1476,6 +1476,13 @@ impl CorgigramApp {
         msg_id: &str,
         display: &MessageRecord,
     ) -> Result<Option<MessageRecord>> {
+        if matches!(
+            self.storage.get_message_status(msg_id)?,
+            Some(status) if status == "queued_mailbox"
+        ) {
+            return Ok(None);
+        }
+
         let mut guard = self.active.lock().await;
         let Some(active) = guard.as_mut() else {
             return Ok(None);
@@ -1591,7 +1598,8 @@ impl CorgigramApp {
     ) -> Result<Option<MessageRecord>> {
         if self.storage.message_exists(msg_id)? {
             fb.delete_mailbox(me, msg_id).await.ok();
-            fb.publish_delivery_ack(&entry.from, msg_id, me).await.ok();
+            self.publish_mailbox_delivery_ack(fb, &entry.from, msg_id, me)
+                .await;
             return Ok(None);
         }
         let contact = match self.storage.get_contact(&entry.from)? {
@@ -1611,8 +1619,32 @@ impl CorgigramApp {
         };
         let record = self.ingest_incoming_plain(msg_id, &entry.from, &plain)?;
         fb.delete_mailbox(me, msg_id).await.ok();
-        fb.publish_delivery_ack(&entry.from, msg_id, me).await.ok();
+        self.publish_mailbox_delivery_ack(fb, &entry.from, msg_id, me)
+            .await;
         Ok(Some(record))
+    }
+
+    async fn publish_mailbox_delivery_ack(
+        &self,
+        fb: &FirebaseSignaling,
+        sender_id: &str,
+        msg_id: &str,
+        me: &str,
+    ) {
+        for attempt in 0..3 {
+            match fb.publish_delivery_ack(sender_id, msg_id, me).await {
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!(
+                        "delivery ack failed (attempt {}): {error:#}",
+                        attempt + 1
+                    );
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
     }
 
     pub async fn sync_mailbox(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {
@@ -1626,6 +1658,13 @@ impl CorgigramApp {
     pub async fn flush_outbox(&self, contact_id: &str) -> Result<()> {
         let items = self.storage.list_outbox(Some(contact_id))?;
         for item in items {
+            if matches!(
+                self.storage.get_message_status(&item.id)?,
+                Some(status) if status == "queued_mailbox"
+            ) {
+                self.storage.delete_outbox(&item.id)?;
+                continue;
+            }
             let plain = base64::engine::general_purpose::STANDARD
                 .decode(&item.body)
                 .unwrap_or_else(|_| item.body.as_bytes().to_vec());

@@ -15,6 +15,7 @@ fn main() {
                 "get_messages_page",
                 "get_contact_avatar",
                 "read_attachment",
+                "get_attachment_count",
                 "get_safety_number",
                 "set_wanted_contact",
                 "connect_offer",

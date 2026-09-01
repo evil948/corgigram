@@ -14,14 +14,30 @@ if [ -f "$ROOT/.tauri/updater.key" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ];
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 fi
 
+SAVED_SIGN_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
+SAVED_SIGN_PASS="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+unset TAURI_SIGNING_PRIVATE_KEY
+unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
 echo "==> Building AppImage (NO_STRIP=1 for Arch/CachyOS)"
 cargo tauri build
 
-APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)"
+export TAURI_SIGNING_PRIVATE_KEY="$SAVED_SIGN_KEY"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$SAVED_SIGN_PASS"
+
+APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
+if [ -z "$APPIMAGE" ]; then
+  APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)"
+fi
 if [ -n "$APPIMAGE" ]; then
   echo "==> Patching AppImage for Wayland hosts"
   "$ROOT/scripts/fix-appimage-wayland.sh" "$APPIMAGE"
 fi
+
+for dup in "$ROOT"/target/release/bundle/appimage/corgigram_*.AppImage; do
+  [ -e "$dup" ] || continue
+  rm -f "$dup" "$dup.sig" "${dup}.tar.gz" "${dup}.tar.gz.sig"
+done
 
 echo
 echo "Done:"

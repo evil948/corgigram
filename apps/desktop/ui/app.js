@@ -1158,6 +1158,15 @@ async function openSettingsModal() {
 $("btn-open-settings").onclick = openSettingsModal;
 $("btn-open-settings-chip").onclick = openSettingsModal;
 
+$("btn-check-updates").onclick = async () => {
+  try {
+    const msg = await invoke("check_for_updates_manual");
+    alert(msg);
+  } catch (err) {
+    alert(String(err));
+  }
+};
+
 $("btn-save-settings").onclick = async () => {
   await invoke("save_config", {
     config: {

@@ -457,6 +457,20 @@ async fn update_profile(
     Ok(profile)
 }
 
+#[tauri::command]
+async fn check_for_updates_manual(app: tauri::AppHandle) -> Result<String, String> {
+    match updater::check_for_updates(&app).await {
+        updater::UpdateCheckResult::UpToDate => {
+            Ok(format!("У вас последняя версия ({}).", app.package_info().version))
+        }
+        updater::UpdateCheckResult::UpdateAvailable { version } => {
+            updater::check_and_install(app).await;
+            Ok(format!("Доступна версия {version}."))
+        }
+        updater::UpdateCheckResult::Failed(msg) => Err(msg),
+    }
+}
+
 pub fn run() {
     let corgigram = CorgigramApp::open_default().expect("failed to open app data");
     let shared: SharedApp = Arc::new(tokio::sync::RwLock::new(corgigram));
@@ -467,6 +481,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -498,13 +513,10 @@ pub fn run() {
             update_profile,
             read_clipboard_image,
             read_clipboard_text,
+            check_for_updates_manual,
         ])
         .setup(move |app| {
-            #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
-
-            #[cfg(all(desktop, not(debug_assertions)))]
+            #[cfg(all(not(debug_assertions), not(any(target_os = "android", target_os = "ios"))))]
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

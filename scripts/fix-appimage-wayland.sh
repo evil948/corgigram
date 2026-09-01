@@ -50,12 +50,16 @@ ARCH="${ARCH:-$(uname -m)}" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" squashfs-
 mv "$OUTPUT" "$APPIMAGE"
 chmod +x "$APPIMAGE"
 
+rm -f "${APPIMAGE}.sig"
+
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   echo "==> Re-signing updater artifacts"
   (
     cd "$ROOT/apps/desktop"
     run_tauri signer sign "$APPIMAGE"
   )
+else
+  echo "warning: TAURI_SIGNING_PRIVATE_KEY not set — OTA signature missing" >&2
 fi
 
 echo "==> Fixed: $APPIMAGE"

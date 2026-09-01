@@ -29,6 +29,9 @@ fn main() {
                 "poll_messages",
                 "save_config",
                 "update_profile",
+                "read_clipboard_image",
+                "read_clipboard_text",
+                "check_for_updates_manual",
             ]),
         ),
     )

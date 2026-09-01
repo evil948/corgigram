@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use corgigram_crypto::{
     decrypt_avatar, decrypt_mailbox, encrypt_avatar, encrypt_mailbox, Identity, PreKeyBundle,
     Session, SessionInitiator, SessionResponder,
@@ -87,12 +87,14 @@ struct PendingOffer {
     contact_id: String,
     peer: PeerConnection,
     seen_ice: HashSet<String>,
+    started_at: DateTime<Utc>,
 }
 
 struct PendingAnswer {
     contact_id: String,
     peer: PeerConnection,
     seen_ice: HashSet<String>,
+    started_at: DateTime<Utc>,
 }
 
 struct ActiveChat {
@@ -687,7 +689,7 @@ impl CorgigramApp {
         }
         let me = self.my_user_id()?;
         // Glare avoidance: lexicographically lower user_id initiates the offer.
-        if me.as_str() > contact_id {
+        if !should_initiate_offer(&me, contact_id) {
             return Ok(());
         }
         if self
@@ -734,7 +736,7 @@ impl CorgigramApp {
         };
 
         let me = self.my_user_id()?;
-        for _ in 0..5 {
+        for _ in 0..30 {
             {
                 let mut pending = self.pending_offer.lock().await;
                 let Some(ref mut offer) = pending.as_mut() else {
@@ -788,7 +790,6 @@ impl CorgigramApp {
             let me = self.my_user_id()?;
             let fb = self.firebase()?;
             fb.clear_signaling(&me).await.ok();
-            fb.clear_signaling(contact_id).await.ok();
         }
 
         let (peer, offer_sdp) = run_offerer_role(&self.build_ice_config().await).await?;
@@ -804,6 +805,7 @@ impl CorgigramApp {
             contact_id: contact_id.to_string(),
             peer,
             seen_ice: HashSet::new(),
+            started_at: Utc::now(),
         });
 
         Ok(ConnectOfferResult {
@@ -939,6 +941,7 @@ impl CorgigramApp {
             contact_id: contact_id.to_string(),
             peer,
             seen_ice: HashSet::new(),
+            started_at: Utc::now(),
         });
         Ok(())
     }
@@ -953,7 +956,7 @@ impl CorgigramApp {
         };
 
         let me = self.my_user_id()?;
-        for _ in 0..10 {
+        for _ in 0..25 {
             let connected = {
                 let mut pending = self.pending_answer.lock().await;
                 let Some(ref mut answer) = pending.as_mut() else {
@@ -1064,6 +1067,33 @@ impl CorgigramApp {
         anyhow::bail!("timed out waiting for peer connection")
     }
 
+    async fn recover_stale_handshakes(&self) {
+        let offer_stale = chrono::Duration::seconds(55);
+        let answer_stale = chrono::Duration::seconds(40);
+        let now = Utc::now();
+
+        {
+            let mut pending = self.pending_answer.lock().await;
+            if let Some(ref answer) = *pending {
+                if now.signed_duration_since(answer.started_at) > answer_stale
+                    && !answer.peer.is_connected()
+                {
+                    *pending = None;
+                }
+            }
+        }
+        {
+            let mut pending = self.pending_offer.lock().await;
+            if let Some(ref offer) = *pending {
+                if now.signed_duration_since(offer.started_at) > offer_stale
+                    && !offer.peer.is_connected()
+                {
+                    *pending = None;
+                }
+            }
+        }
+    }
+
     /// Poll Firebase for incoming WebRTC offers and auto-answer known contacts.
     pub async fn poll_signaling(&self) -> Result<Option<String>> {
         if !self.config.firebase_configured() {
@@ -1086,12 +1116,11 @@ impl CorgigramApp {
             return Ok(None);
         }
 
-        let me = self.my_user_id()?;
         {
             let mut pending = self.pending_offer.lock().await;
             if let Some(p) = pending.as_ref() {
                 if p.contact_id == offer.from {
-                    if me.as_str() > offer.from.as_str() {
+                    if !should_initiate_offer(&me, &offer.from) {
                         *pending = None;
                     } else {
                         return Ok(None);
@@ -1100,15 +1129,7 @@ impl CorgigramApp {
             }
         }
 
-        let last_key = format!("last_offer_ts_{}", offer.from);
-        if let Some(last) = self.storage.get_meta(&last_key)? {
-            if last.parse::<i64>().unwrap_or(0) >= offer.ts {
-                return Ok(None);
-            }
-        }
-
         self.begin_connect_answer(&offer.sdp, &offer.from).await?;
-        self.storage.set_meta(&last_key, &offer.ts.to_string())?;
         Ok(Some(offer.from))
     }
 
@@ -1338,6 +1359,7 @@ impl CorgigramApp {
 
     /// WebRTC connect maintenance — isolated from mailbox sync so delivery never blocks on ICE.
     pub async fn poll_connectivity(&self) -> Result<Option<String>> {
+        self.recover_stale_handshakes().await;
         let _ = self.maintain_wanted_connection().await;
 
         if let Ok(Some(contact_id)) = self.poll_signaling().await {
@@ -1565,6 +1587,14 @@ impl CorgigramApp {
         self.storage.set_meta("avatar_mime", &mime)?;
         Ok(())
     }
+}
+
+fn glare_key(user_id: &str) -> String {
+    user_id.to_ascii_lowercase()
+}
+
+fn should_initiate_offer(me: &str, contact_id: &str) -> bool {
+    glare_key(me) <= glare_key(contact_id)
 }
 
 fn normalize_user_id(user_id: &str) -> Result<String> {

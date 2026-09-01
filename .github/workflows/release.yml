@@ -3,13 +3,8 @@ name: Release
 on:
   workflow_dispatch:
   push:
-    branches: [master, main]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "apps/desktop/**"
-      - "crates/**"
-      - ".github/workflows/release.yml"
+    tags:
+      - "v*"
 
 jobs:
   release:
@@ -30,6 +25,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Tauri CLI (npm)
+        run: npm install -g @tauri-apps/cli@2
+
       - name: Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -40,10 +44,6 @@ jobs:
             librsvg2-dev \
             patchelf \
             libssl-dev
-
-      - name: Install Tauri CLI
-        if: matrix.platform == 'ubuntu-22.04'
-        run: cargo install tauri-cli --locked
 
       - uses: tauri-apps/tauri-action@v0
         if: matrix.platform == 'ubuntu-22.04'

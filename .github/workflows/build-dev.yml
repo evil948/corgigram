@@ -1,0 +1,85 @@
+# Fast unsigned builds for manual testing (~5–8 min). Artifacts in Actions, not Releases.
+name: Dev build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform
+        required: true
+        default: linux
+        type: choice
+        options:
+          - linux
+          - windows
+          - both
+
+jobs:
+  dev-linux:
+    if: inputs.platform == 'linux' || inputs.platform == 'both'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+      - name: Install Tauri CLI (npm)
+        run: npm install -g @tauri-apps/cli@2
+      - name: Disable OTA signing for dev artifacts
+        shell: bash
+        run: |
+          node -e "
+          const fs=require('fs');
+          const p='apps/desktop/tauri.conf.json';
+          const j=JSON.parse(fs.readFileSync(p,'utf8'));
+          j.bundle.createUpdaterArtifacts=false;
+          fs.writeFileSync(p, JSON.stringify(j,null,2)+'\n');
+          "
+      - name: Build AppImage (no OTA signing)
+        run: |
+          cd apps/desktop
+          cargo tauri build --target x86_64-unknown-linux-gnu
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: corgigram-dev-linux
+          path: target/**/release/bundle/appimage/*.AppImage
+
+  dev-windows:
+    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Tauri CLI (npm)
+        run: npm install -g @tauri-apps/cli@2
+      - name: Disable OTA signing for dev artifacts
+        shell: pwsh
+        run: |
+          $j = Get-Content apps/desktop/tauri.conf.json -Raw | ConvertFrom-Json
+          $j.bundle.createUpdaterArtifacts = $false
+          $j | ConvertTo-Json -Depth 20 | Set-Content apps/desktop/tauri.conf.json
+      - name: Build NSIS installer (unsigned)
+        run: |
+          cd apps/desktop
+          cargo tauri build --target x86_64-pc-windows-msvc
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: corgigram-dev-windows
+          path: target/**/release/bundle/nsis/*-setup.exe

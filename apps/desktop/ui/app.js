@@ -945,18 +945,23 @@ function filesFromPasteEvent(e) {
   return files;
 }
 
-async function readNativeClipboardImageFile() {
+function attachmentDtoToFile(item) {
+  if (!item?.dataBase64) return null;
+  const binary = atob(item.dataBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], item.name || "clipboard.bin", {
+    type: item.mime || "application/octet-stream",
+  });
+}
+
+async function readNativeClipboardFiles() {
   try {
-    const img = await invoke("read_clipboard_image");
-    if (!img?.dataBase64) return null;
-    const binary = atob(img.dataBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new File([bytes], img.name || "clipboard.png", {
-      type: img.mime || "image/png",
-    });
+    const items = await invoke("read_clipboard_attachments");
+    if (!Array.isArray(items) || !items.length) return [];
+    return items.map(attachmentDtoToFile).filter(Boolean);
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -973,9 +978,9 @@ async function handleComposePaste(e) {
   if (!IS_LINUX) return;
 
   e.preventDefault();
-  const nativeFile = await readNativeClipboardImageFile();
-  if (nativeFile) {
-    await addAttachmentsFromFiles([nativeFile]);
+  const nativeFiles = await readNativeClipboardFiles();
+  if (nativeFiles.length) {
+    await addAttachmentsFromFiles(nativeFiles);
     return;
   }
 

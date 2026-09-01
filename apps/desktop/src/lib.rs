@@ -36,11 +36,14 @@ struct AttachmentInput {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClipboardImageDto {
+struct ClipboardAttachmentDto {
     mime: String,
     data_base64: String,
     name: String,
 }
+
+const MAX_CLIPBOARD_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_CLIPBOARD_ATTACHMENTS: usize = 10;
 
 fn encode_rgba_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
     use image::{ImageBuffer, Rgba};
@@ -55,25 +58,92 @@ fn encode_rgba_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, 
     Ok(buf)
 }
 
-#[tauri::command]
-fn read_clipboard_image() -> Result<Option<ClipboardImageDto>, String> {
+fn guess_mime_from_name(name: &str) -> String {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    };
+    mime.to_string()
+}
+
+fn attachment_from_path(path: &std::path::Path) -> Result<ClipboardAttachmentDto, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("clipboard path is not a file".into());
+    }
+    if meta.len() > MAX_CLIPBOARD_ATTACHMENT_BYTES {
+        return Err("clipboard file is too large".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("clipboard-file")
+        .to_string();
+    Ok(ClipboardAttachmentDto {
+        mime: guess_mime_from_name(&name),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        name,
+    })
+}
+
+fn read_clipboard_attachments_inner() -> Result<Vec<ClipboardAttachmentDto>, String> {
     use arboard::Clipboard;
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-    let image = match clipboard.get_image() {
-        Ok(img) => img,
-        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+
+    match clipboard.get().file_list() {
+        Ok(paths) if !paths.is_empty() => {
+            let mut out = Vec::new();
+            for path in paths.into_iter().take(MAX_CLIPBOARD_ATTACHMENTS) {
+                if let Ok(item) = attachment_from_path(&path) {
+                    out.push(item);
+                }
+            }
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+        Err(arboard::Error::ContentNotAvailable) => {}
         Err(e) => return Err(e.to_string()),
-    };
-    let png = encode_rgba_png(image.width, image.height, &image.bytes)?;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    Ok(Some(ClipboardImageDto {
-        mime: "image/png".into(),
-        data_base64: base64::engine::general_purpose::STANDARD.encode(png),
-        name: format!("clipboard-{ts}.png"),
-    }))
+        Ok(_) => {}
+    }
+
+    match clipboard.get_image() {
+        Ok(image) => {
+            let png = encode_rgba_png(image.width, image.height, &image.bytes)?;
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            Ok(vec![ClipboardAttachmentDto {
+                mime: "image/png".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(png),
+                name: format!("clipboard-{ts}.png"),
+            }])
+        }
+        Err(arboard::Error::ContentNotAvailable) => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn read_clipboard_attachments() -> Result<Vec<ClipboardAttachmentDto>, String> {
+    read_clipboard_attachments_inner()
+}
+
+#[tauri::command]
+fn read_clipboard_image() -> Result<Option<ClipboardAttachmentDto>, String> {
+    Ok(read_clipboard_attachments_inner()?.into_iter().next())
 }
 
 #[tauri::command]
@@ -511,6 +581,7 @@ pub fn run() {
             poll_messages,
             save_config,
             update_profile,
+            read_clipboard_attachments,
             read_clipboard_image,
             read_clipboard_text,
             check_for_updates_manual,

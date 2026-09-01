@@ -1,12 +1,12 @@
-# OTA-обновления Corgigram
+# OTA-обновления korki
 
 Приложение при каждом запуске (release-сборка) проверяет GitHub Releases и предлагает установить новую версию.
 
 ## Для пользователей
 
 1. **Первый раз** установите сборку из GitHub Releases:
-   - **Linux** — `Corgigram_*_amd64.AppImage`
-   - **Windows** — `Corgigram_*_x64-setup.exe`
+   - **Linux** — `korki_*_amd64.AppImage` (или legacy `Corgigram_*`)
+   - **Windows** — `korki_*_x64-setup.exe` (или legacy `Corgigram_*`)
 2. Дальше обновления ставятся **из самого приложения** (диалог «Установить» → перезапуск).
 3. Сырой `corgigram-desktop.exe` из zip **не поддерживает** автообновление — нужен NSIS/AppImage.
 
@@ -68,13 +68,13 @@ AppImage из CI упаковывает старый `libwayland-client` — н�
 **Быстрый обход для уже скачанного AppImage:**
 
 ```bash
-LD_PRELOAD=/usr/lib/libwayland-client.so ./Corgigram_*.AppImage
+LD_PRELOAD=/usr/lib/libwayland-client.so ./korki_*.AppImage
 ```
 
 **Правильно:** после `cargo tauri build` скрипт `./scripts/build-appimage.sh` автоматически вызывает `fix-appimage-wayland.sh`. Вручную:
 
 ```bash
-./scripts/fix-appimage-wayland.sh target/release/bundle/appimage/Corgigram_*.AppImage
+./scripts/fix-appimage-wayland.sh target/release/bundle/appimage/korki_*.AppImage
 ```
 
 ## Endpoint обновлений

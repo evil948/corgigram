@@ -679,7 +679,7 @@ impl CorgigramApp {
         let bundle = fb
             .fetch_directory(&user_id)
             .await?
-            .with_context(|| format!("user '{user_id}' not found — they must open Corgigram at least once"))?;
+            .with_context(|| format!("user '{user_id}' not found — they must open korki at least once"))?;
         let contact = self.add_contact_from_bundle(bundle)?;
         let owner_id = contact.user_id.clone();
         let me = self.my_user_id()?;
@@ -764,7 +764,7 @@ impl CorgigramApp {
             }
             fetched.with_context(|| {
                 format!(
-                    "пользователь «{from_user_id}» не найден — попросите его открыть Corgigram и нажать «Принять» снова"
+                    "пользователь «{from_user_id}» не найден — попросите его открыть korki и нажать «Принять» снова"
                 )
             })?
         };

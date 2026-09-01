@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# Corgigram release build — Windows (native, run on Windows)
+# korki release build — Windows (native, run on Windows)
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -9,7 +9,7 @@ $Version = (Select-String -Path Cargo.toml -Pattern '^version' | Select-Object -
 $Out = Join-Path $Root "dist\corgigram-$Version-windows-x86_64"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
-Write-Host "==> Corgigram release $Version (Windows x86_64)"
+Write-Host "==> korki release $Version (Windows x86_64)"
 Write-Host "    Output: $Out"
 Write-Host
 
@@ -39,7 +39,7 @@ if (Get-Command cargo-tauri -ErrorAction SilentlyContinue) {
 
 Copy-Item "docs\release-test.md" "$Out\TESTING.md"
 @"
-Corgigram $Version — Windows x86_64
+korki $Version — Windows x86_64
 
   corgigram.exe          CLI
   corgigram-desktop.exe  GUI

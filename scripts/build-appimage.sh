@@ -17,7 +17,10 @@ fi
 echo "==> Building AppImage (NO_STRIP=1 for Arch/CachyOS)"
 cargo tauri build
 
-APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
+APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/korki_*.AppImage 2>/dev/null | head -1)"
+if [ -z "$APPIMAGE" ]; then
+  APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
+fi
 if [ -z "$APPIMAGE" ]; then
   APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)"
 fi

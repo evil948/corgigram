@@ -659,7 +659,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error running Corgigram")
+        .expect("error running korki")
         .run(move |_app_handle, event| {
             if let RunEvent::Exit = event {
                 tauri::async_runtime::block_on(async {

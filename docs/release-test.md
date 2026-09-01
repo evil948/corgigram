@@ -1,4 +1,4 @@
-# Release test plan — Linux + Windows
+# Release test plan — korki (Linux + Windows)
 
 Тест после финальных сборок. Firebase уже настроен (`corgigram-shared`).
 

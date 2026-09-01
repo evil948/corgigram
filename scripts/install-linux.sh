@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Corgigram CLI + desktop to user local paths
+# Install korki CLI + desktop to user local paths
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,18 +20,25 @@ if pkg-config --exists javascriptcoregtk-4.1 2>/dev/null; then
   cargo build --release -p corgigram-desktop
   install -Dm755 "$TARGET/release/corgigram-desktop" "$BIN_DIR/corgigram-desktop"
 
-  cat > "$APP_DIR/corgigram.desktop" <<EOF
+  cat > "$APP_DIR/korki.desktop" <<EOF
 [Desktop Entry]
-Name=Corgigram
+Name=korki
 Comment=E2E messenger
 Exec=$BIN_DIR/corgigram-desktop
-Icon=internet-mail
+Icon=korki
 Terminal=false
 Type=Application
 Categories=Network;InstantMessaging;
+StartupWMClass=korki
 EOF
+  ICON_BASE="$HOME/.local/share/icons/hicolor"
+  install -Dm644 "$ROOT/apps/desktop/icons/32x32.png" "$ICON_BASE/32x32/apps/korki.png"
+  install -Dm644 "$ROOT/apps/desktop/icons/128x128.png" "$ICON_BASE/128x128/apps/korki.png"
+  install -Dm644 "$ROOT/apps/desktop/icons/128x128@2x.png" "$ICON_BASE/256x256/apps/korki.png"
+  gtk-update-icon-cache "$ICON_BASE" 2>/dev/null || true
+  rm -f "$APP_DIR/corgigram.desktop"
   echo "Desktop: $BIN_DIR/corgigram-desktop"
-  echo "Menu entry: $APP_DIR/corgigram.desktop"
+  echo "Menu entry: $APP_DIR/korki.desktop"
 else
   echo "WARN: webkit2gtk-4.1 not found — desktop not built."
   echo "Run: sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3 base-devel"

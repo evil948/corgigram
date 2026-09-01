@@ -12,7 +12,10 @@ cd "$ROOT/apps/desktop"
 # tauri-action invokes this script as: build-appimage-ci.sh build --target ...
 run_tauri "$@"
 
-APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
+APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/korki_*.AppImage 2>/dev/null | head -1)"
+if [ -z "$APPIMAGE" ]; then
+  APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
+fi
 if [ -z "$APPIMAGE" ]; then
   APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/*.AppImage | head -1)"
 fi

@@ -1,6 +1,6 @@
-# Firebase setup для Corgigram
+# Firebase setup для korki
 
-Corgigram по умолчанию использует общий Realtime Database:
+korki по умолчанию использует общий Realtime Database:
 
 ```
 https://corgigram-shared-default-rtdb.europe-west1.firebasedatabase.app
@@ -51,7 +51,7 @@ npx firebase-tools deploy --only database --project corgigram-shared
 
 1. Создайте свой проект и Realtime Database
 2. Загрузите те же rules
-3. В Corgigram: **Настройки → Firebase Database URL** → ваш URL
+3. В korki: **Настройки → Firebase Database URL** → ваш URL
 
 ## Проверка
 

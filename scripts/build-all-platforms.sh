@@ -20,7 +20,7 @@ need_pkg() {
   return 0
 }
 
-echo "=== Corgigram multi-platform build v${VERSION} ==="
+echo "=== korki multi-platform build v${VERSION} ==="
 
 # Linux
 echo ">>> Linux CLI + Desktop"

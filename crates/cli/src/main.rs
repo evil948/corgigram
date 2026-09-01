@@ -257,7 +257,7 @@ fn load_identity(path: PathBuf) -> Result<Identity> {
 }
 
 async fn cmd_demo(message: String) -> Result<()> {
-    println!("=== Corgigram demo: crypto + WebRTC + E2E message ===\n");
+    println!("=== korki demo: crypto + WebRTC + E2E message ===\n");
 
     let alice = Identity::generate("alice", "Alice");
     let bob = Identity::generate("bob", "Bob");

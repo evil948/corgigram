@@ -20,10 +20,10 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.10"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-authors = ["Corgigram"]
+authors = ["korki"]
 
 [workspace.dependencies]
 anyhow = "1"

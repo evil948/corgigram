@@ -22,7 +22,7 @@ class CorgigramApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Corgigram',
+      title: 'korki',
       theme: AppTheme.dark(),
       home: const RootScreen(),
       debugShowCheckedModeBanner: false,
@@ -103,7 +103,7 @@ class _RootScreenState extends State<RootScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(active?.displayName ?? 'Corgigram'),
+        title: Text(active?.displayName ?? 'korki'),
         leading: Builder(
           builder: (ctx) => IconButton(
             icon: const Icon(Icons.menu),
@@ -136,7 +136,7 @@ class _RootScreenState extends State<RootScreen> {
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(
-                  snapshot!.profile?.displayName ?? 'Corgigram',
+                  snapshot!.profile?.displayName ?? 'korki',
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
@@ -360,11 +360,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              const Text('🐕', textAlign: TextAlign.center, style: TextStyle(fontSize: 48)),
               const Text(
-                'Corgigram',
+                'korki',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: -0.5),
               ),
               const SizedBox(height: 8),
               const Text(

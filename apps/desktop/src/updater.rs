@@ -84,7 +84,7 @@ pub async fn check_and_install(app: tauri::AppHandle) {
     let install = app
         .dialog()
         .message(message)
-        .title("Обновление Corgigram")
+        .title("Обновление korki")
         .kind(MessageDialogKind::Info)
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Установить".into(),
@@ -109,7 +109,7 @@ pub async fn check_and_install(app: tauri::AppHandle) {
         let _ = app
             .dialog()
             .message(format!("Не удалось установить обновление:\n{err}"))
-            .title("Обновление Corgigram")
+            .title("Обновление korki")
             .kind(MessageDialogKind::Error)
             .blocking_show();
         return;

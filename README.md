@@ -1,6 +1,6 @@
-# Corgigram
+# korki
 
-E2E-мессенджер для 2–5 человек. Дизайн — **Telegram × Signal**: двухколоночный layout как в Telegram, тёмная палитра и privacy-индикаторы как в Signal.
+Приватный E2E-мессенджер для своих. Тёплый, современный интерфейс с акцентом на доверие и простоту.
 
 ## Release (Linux + Windows)
 
@@ -100,7 +100,7 @@ crates/storage/     # SQLite (messages, outbox)
 crates/core/        # логика приложения + Firebase
 crates/transport/   # WebRTC
 crates/cli/         # CLI
-apps/desktop/       # Tauri UI
+apps/desktop/       # Tauri UI (korki)
 apps/mobile/        # Flutter + flutter_rust_bridge
 docs/               # firebase-rules.json, mobile-build.md
 scripts/            # setup-firebase.sh, setup-mobile.sh

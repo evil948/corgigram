@@ -4,8 +4,8 @@ class AppTheme {
   static const bg = Color(0xFF121212);
   static const sidebar = Color(0xFF1E1E1E);
   static const bubbleIn = Color(0xFF2A2A2A);
-  static const bubbleOut = Color(0xFF2C6BED);
-  static const accent = Color(0xFF2C6BED);
+  static const accent = Color(0xFFE8893A);
+  static const bubbleOut = Color(0xFFE8893A);
   static const textPrimary = Color(0xFFE8E8E8);
   static const textSecondary = Color(0xFF9AA0A6);
   static const border = Color(0xFF2D2D2D);

@@ -13,7 +13,7 @@ use crate::dto::{
 static APP: OnceCell<Arc<Mutex<CorgigramApp>>> = OnceCell::new();
 
 fn app() -> Result<&'static Arc<Mutex<CorgigramApp>>, String> {
-    APP.get().ok_or_else(|| "Corgigram not initialized".to_string())
+    APP.get().ok_or_else(|| "korki not initialized".to_string())
 }
 
 #[frb(init)]

@@ -1,7 +1,7 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Default permissions for Corgigram desktop commands."
+description = "Default permissions for korki desktop commands."
 permissions = [
   "allow-get-snapshot",
   "allow-create-identity",

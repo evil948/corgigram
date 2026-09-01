@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Corgigram release build — Linux (native)
+# korki release build — Linux (native)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,7 +10,7 @@ TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 cd "$ROOT"
 mkdir -p "$OUT"
 
-echo "==> Corgigram release ${VERSION} (Linux x86_64)"
+echo "==> korki release ${VERSION} (Linux x86_64)"
 echo "    Output: $OUT"
 echo
 
@@ -42,7 +42,7 @@ fi
 
 cp "$ROOT/docs/release-test.md" "$OUT/TESTING.md"
 cat > "$OUT/README.txt" <<EOF
-Corgigram ${VERSION} — Linux x86_64
+korki ${VERSION} — Linux x86_64
 
   corgigram          CLI (WebRTC + E2E demo)
   corgigram-desktop  GUI (если собран)

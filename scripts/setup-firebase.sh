@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ID="corgigram-shared"
-DISPLAY_NAME="Corgigram Shared"
+DISPLAY_NAME="korki Shared"
 DB_REGION="europe-west1"
 DB_INSTANCE="${PROJECT_ID}-default-rtdb"
 DEFAULT_URL="https://${DB_INSTANCE}.${DB_REGION}.firebasedatabase.app"
 
 cd "$ROOT"
 
-echo "==> Corgigram Firebase setup"
+echo "==> korki Firebase setup"
 echo "    Project:  $PROJECT_ID"
 echo "    Database: $DEFAULT_URL"
 echo
@@ -69,5 +69,5 @@ else
 fi
 
 echo
-echo "Done. Default URL in Corgigram:"
+echo "Done. Default URL in korki:"
 echo "  ${DEFAULT_URL}"

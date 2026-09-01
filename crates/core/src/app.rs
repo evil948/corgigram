@@ -576,8 +576,7 @@ impl CorgigramApp {
         let mut ice = IceConfig::default();
         if let Ok(me) = self.my_user_id() {
             if let Ok(turn) = fetch_elixir_webrtc_turn(&me).await {
-                ice.turn_servers = vec![turn];
-                ice.relay_only = true;
+                ice.add_turn_server(turn);
             }
         }
         ice
@@ -686,6 +685,11 @@ impl CorgigramApp {
         if !self.config.firebase_configured() {
             return Ok(());
         }
+        let me = self.my_user_id()?;
+        // Glare avoidance: lexicographically lower user_id initiates the offer.
+        if me.as_str() > contact_id {
+            return Ok(());
+        }
         if self
             .live_contact_id
             .read()
@@ -700,16 +704,21 @@ impl CorgigramApp {
             return Ok(());
         }
         {
-            let pending = self.pending_offer.lock().await;
+            let mut pending = self.pending_offer.lock().await;
             if let Some(p) = pending.as_ref() {
                 if p.contact_id == contact_id {
                     return Ok(());
                 }
-                return Ok(());
+                *pending = None;
             }
         }
-        if self.active.lock().await.is_some() {
-            return Ok(());
+        {
+            let active = self.active.lock().await;
+            if let Some(chat) = active.as_ref() {
+                if chat.contact_id == contact_id {
+                    return Ok(());
+                }
+            }
         }
         self.connect_offer(contact_id).await?;
         Ok(())
@@ -1077,6 +1086,20 @@ impl CorgigramApp {
             return Ok(None);
         }
 
+        let me = self.my_user_id()?;
+        {
+            let mut pending = self.pending_offer.lock().await;
+            if let Some(p) = pending.as_ref() {
+                if p.contact_id == offer.from {
+                    if me.as_str() > offer.from.as_str() {
+                        *pending = None;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
         let last_key = format!("last_offer_ts_{}", offer.from);
         if let Some(last) = self.storage.get_meta(&last_key)? {
             if last.parse::<i64>().unwrap_or(0) >= offer.ts {
@@ -1173,9 +1196,12 @@ impl CorgigramApp {
         let ciphertext = encrypt_mailbox(&identity, &contact.bundle, text.as_bytes())?;
 
         if self.config.firebase_configured() {
-            self.firebase()?
-                .publish_mailbox(contact_id, &record.id, &me, &ciphertext)
+            let fb = self.firebase()?;
+            fb.publish_mailbox(contact_id, &record.id, &me, &ciphertext)
                 .await?;
+            fb.publish_mailbox_ping(contact_id, &me, &record.id)
+                .await
+                .ok();
             let sent = MessageRecord {
                 id: record.id.clone(),
                 contact_id: contact_id.to_string(),
@@ -1270,25 +1296,67 @@ impl CorgigramApp {
         Ok(())
     }
 
-    pub async fn poll_incoming(&self) -> Result<Vec<MessageRecord>> {
+    /// Pull mailbox for every contact; errors on one contact do not block others.
+    pub async fn sync_all_mailboxes(&self) -> Result<Vec<MessageRecord>> {
         let mut received = Vec::new();
+        if !self.config.firebase_configured() {
+            return Ok(received);
+        }
+        let me = match self.my_user_id() {
+            Ok(id) => id,
+            Err(_) => return Ok(received),
+        };
+        let fb = match self.firebase() {
+            Ok(f) => f,
+            Err(_) => return Ok(received),
+        };
 
+        let mut priority: Vec<String> = Vec::new();
+        if let Ok(pings) = fb.list_mailbox_pings(&me).await {
+            for (from_id, ping) in pings {
+                if self.storage.get_contact(&from_id)?.is_some() {
+                    priority.push(from_id.clone());
+                }
+                if let Ok(msgs) = self.sync_mailbox(&from_id).await {
+                    received.extend(msgs);
+                }
+                fb.delete_mailbox_ping(&me, &from_id).await.ok();
+                let _ = ping;
+            }
+        }
+
+        for contact in self.storage.list_contacts()? {
+            if priority.contains(&contact.user_id) {
+                continue;
+            }
+            if let Ok(msgs) = self.sync_mailbox(&contact.user_id).await {
+                received.extend(msgs);
+            }
+        }
+        Ok(received)
+    }
+
+    /// WebRTC connect maintenance — isolated from mailbox sync so delivery never blocks on ICE.
+    pub async fn poll_connectivity(&self) -> Result<Option<String>> {
         let _ = self.maintain_wanted_connection().await;
-        let _ = self.sync_invitations().await;
 
-        if let Some(contact_id) = self.poll_signaling().await? {
-            received.extend(self.sync_mailbox(&contact_id).await?);
+        if let Ok(Some(contact_id)) = self.poll_signaling().await {
+            let _ = self.advance_pending_answer().await;
+            let _ = self.sync_mailbox(&contact_id).await;
             let _ = self.flush_outbox(&contact_id).await;
+            return Ok(Some(contact_id));
         }
 
-        if let Some(contact_id) = self.advance_pending_answer().await? {
-            received.extend(self.sync_mailbox(&contact_id).await?);
+        if let Ok(Some(contact_id)) = self.advance_pending_answer().await {
+            let _ = self.sync_mailbox(&contact_id).await;
             let _ = self.flush_outbox(&contact_id).await;
+            return Ok(Some(contact_id));
         }
 
-        if let Some(contact_id) = self.advance_pending_offer().await? {
-            received.extend(self.sync_mailbox(&contact_id).await?);
+        if let Ok(Some(contact_id)) = self.advance_pending_offer().await {
+            let _ = self.sync_mailbox(&contact_id).await;
             let _ = self.flush_outbox(&contact_id).await;
+            return Ok(Some(contact_id));
         }
 
         if let Ok(me) = self.my_user_id() {
@@ -1301,15 +1369,16 @@ impl CorgigramApp {
             }
         }
 
-        for contact in self.storage.list_contacts()? {
-            received.extend(self.sync_mailbox(&contact.user_id).await?);
-        }
-
         let live_id = self.live_contact_id.read().ok().and_then(|g| g.clone());
         if let Some(contact_id) = live_id {
             let _ = self.flush_outbox(&contact_id).await;
         }
 
+        Ok(None)
+    }
+
+    pub async fn recv_live_messages(&self) -> Result<Vec<MessageRecord>> {
+        let mut received = Vec::new();
         let mut guard = self.active.lock().await;
         let Some(active) = guard.as_mut() else {
             return Ok(received);
@@ -1340,6 +1409,14 @@ impl CorgigramApp {
                 _ => break,
             }
         }
+        Ok(received)
+    }
+
+    pub async fn poll_incoming(&self) -> Result<Vec<MessageRecord>> {
+        let _ = self.sync_invitations().await;
+        let mut received = self.sync_all_mailboxes().await.unwrap_or_default();
+        let _ = self.poll_connectivity().await;
+        received.extend(self.recv_live_messages().await.unwrap_or_default());
         Ok(received)
     }
 

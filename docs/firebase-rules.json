@@ -30,6 +30,15 @@
         }
       }
     },
+    "mailbox_pings": {
+      "$userId": {
+        ".read": true,
+        "$fromUserId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
     "directory": {
       "$userId": {
         ".read": true,

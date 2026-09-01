@@ -359,15 +359,37 @@ pub fn run() {
                 }
             });
             let poll_handle = app.handle().clone();
-            let message_poll = poll_app.clone();
+            let mailbox_poll = poll_app.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    let incoming = message_poll.read().await.poll_incoming().await.unwrap_or_default();
-                    for msg in incoming {
-                        let _ = poll_handle.emit("message-received", &msg);
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let incoming = mailbox_poll
+                        .read()
+                        .await
+                        .sync_all_mailboxes()
+                        .await
+                        .unwrap_or_default();
+                    for msg in &incoming {
+                        let _ = poll_handle.emit("message-received", msg);
                     }
-                    let _ = poll_handle.emit("contacts-updated", ());
+                    if !incoming.is_empty() {
+                        let _ = poll_handle.emit("contacts-updated", ());
+                    }
+                }
+            });
+            let connect_poll = poll_app.clone();
+            let connect_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let app = connect_poll.read().await;
+                    let _ = app.sync_invitations().await;
+                    let _ = app.poll_connectivity().await;
+                    let live = app.recv_live_messages().await.unwrap_or_default();
+                    for msg in &live {
+                        let _ = connect_handle.emit("message-received", msg);
+                    }
+                    let _ = connect_handle.emit("contacts-updated", ());
                 }
             });
             let ice_poll = poll_app.clone();

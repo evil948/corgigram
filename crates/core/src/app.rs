@@ -82,6 +82,8 @@ pub struct AppSnapshot {
     pub pending_invitations: Vec<InvitationInfo>,
     pub connected_contact_id: Option<String>,
     pub connecting_contact_id: Option<String>,
+    /// Contact whose chat is open — WebRTC connect is being attempted.
+    pub wanted_contact_id: Option<String>,
     pub firebase_configured: bool,
     pub firebase_database_url: String,
     pub firebase_database_url_override: Option<String>,
@@ -213,7 +215,10 @@ impl CorgigramApp {
                 return Some(p.contact_id.clone());
             }
         }
-        None
+        self.wanted_contact_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// UI: open chat — background poll will start/complete WebRTC for this contact.
@@ -438,6 +443,11 @@ impl CorgigramApp {
                 .ok()
                 .and_then(|g| g.clone()),
             connecting_contact_id: self.connecting_contact_id(),
+            wanted_contact_id: self
+                .wanted_contact_id
+                .read()
+                .ok()
+                .and_then(|g| g.clone()),
             firebase_configured: self.config.firebase_configured(),
             firebase_database_url: self.config.effective_firebase_database_url(),
             firebase_database_url_override: self.config.firebase_database_url_override(),
@@ -853,7 +863,11 @@ impl CorgigramApp {
         let fb = self.firebase()?;
         let queued = self.storage.list_outbound_by_status("queued_mailbox")?;
         let mut updated = Vec::new();
+        let now = Utc::now();
         for msg in queued {
+            if now.signed_duration_since(msg.created_at) < chrono::Duration::seconds(15) {
+                continue;
+            }
             if fb
                 .mailbox_entry_exists(&msg.contact_id, &msg.id)
                 .await

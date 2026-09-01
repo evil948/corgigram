@@ -107,8 +107,29 @@ function msgContactId(m) {
   return m?.contact_id ?? m?.contactId ?? "";
 }
 
+function pendingStatusLabel() {
+  return "ожидает прочтения";
+}
+
 function isPendingStatus(status) {
   return status === "queued_local" || status === "queued_mailbox";
+}
+
+function isChatConnecting(contactId) {
+  if (!contactId || !snapshot) return false;
+  if (snapshot.connected_contact_id === contactId) return false;
+  return (
+    snapshot.connecting_contact_id === contactId ||
+    snapshot.wanted_contact_id === contactId
+  );
+}
+
+function contactConnectionLabel(contactId) {
+  if (!snapshot) return "";
+  if (snapshot.connected_contact_id === contactId) return "прямое соединение";
+  if (isChatConnecting(contactId)) return "подключение WebRTC…";
+  if (snapshot.contact_presence?.[contactId]) return "в приложении";
+  return `@${contactId}`;
 }
 
 function updateComposePlaceholder() {
@@ -146,7 +167,7 @@ function updateOutboxBadge() {
   const badge = $("outbox-badge");
   const count = snapshot?.outbox_count ?? 0;
   if (count > 0) {
-    badge.textContent = `${count} в очереди`;
+    badge.textContent = `${count} ожидает прочтения`;
     show(badge);
   } else {
     hide(badge);
@@ -239,9 +260,7 @@ async function setWantedContact(contactId) {
 }
 
 function contactPreview(c) {
-  const online = snapshot.contact_presence?.[c.user_id];
-  if (online) return "в сети";
-  return `@${c.user_id}`;
+  return contactConnectionLabel(c.user_id);
 }
 
 function setChatOpen(open) {
@@ -272,7 +291,9 @@ function renderContacts() {
     if (snapshot.contact_presence?.[c.user_id]) {
       const dot = document.createElement("span");
       dot.className = "online-dot";
-      dot.title = "В сети";
+      dot.title = snapshot.connected_contact_id === c.user_id
+        ? "Прямое соединение"
+        : "Приложение открыто";
       avatarWrap.appendChild(dot);
     }
     btn.appendChild(avatarWrap);
@@ -323,23 +344,28 @@ async function refreshChatStatus(skipContactsRender = false) {
   snapshot = await invoke("get_snapshot");
   const peerOnline = snapshot.contact_presence?.[activeContactId] === true;
   const connected = snapshot.connected_contact_id === activeContactId;
-  const connecting = snapshot.connecting_contact_id === activeContactId;
+  const connecting = isChatConnecting(activeContactId);
 
   const onlineDot = $("chat-online-dot");
-  if (peerOnline && connected) {
+  if (peerOnline) {
     show(onlineDot);
+    onlineDot.title = connected ? "Прямое соединение" : "Приложение открыто";
   } else {
     hide(onlineDot);
   }
 
   const statusEl = $("chat-status");
   if (connected) {
-    statusEl.textContent = "Прямое соединение · в сети";
+    statusEl.textContent = "Прямое соединение WebRTC";
   } else if (connecting) {
-    statusEl.textContent = peerOnline ? "Подключение…" : "Ожидание собеседника";
+    statusEl.textContent = peerOnline
+      ? "Подключение WebRTC… · mailbox уже работает"
+      : "Ожидание собеседника";
+  } else if (peerOnline) {
+    statusEl.textContent = "В приложении · mailbox · WebRTC не активен";
   } else {
     statusEl.textContent = snapshot.firebase_configured
-      ? "Offline mailbox · доставка при появлении в сети"
+      ? "Offline · доставка через mailbox"
       : "Не подключено";
   }
 
@@ -348,12 +374,12 @@ async function refreshChatStatus(skipContactsRender = false) {
   pill.classList.remove("is-live", "is-connecting");
   if (connected) {
     pill.classList.add("is-live");
-    pillText.textContent = "Защищено E2E · онлайн";
+    pillText.textContent = "E2E · прямое соединение";
   } else if (connecting) {
     pill.classList.add("is-connecting");
-    pillText.textContent = "Защищено E2E · подключение";
+    pillText.textContent = "E2E · подключение WebRTC";
   } else {
-    pillText.textContent = "Защищено E2E";
+    pillText.textContent = peerOnline ? "E2E · mailbox" : "Защищено E2E";
   }
 
   updateConnectButton();
@@ -430,7 +456,7 @@ function updateMessageStatus(msgId, status) {
   const timeEl = row.querySelector(".msg-time");
   if (!timeEl) return;
   const base = timeEl.textContent.split(" · ")[0];
-  timeEl.textContent = pending ? `${base} · в очереди` : base;
+  timeEl.textContent = pending ? `${base} · ${pendingStatusLabel()}` : base;
 }
 
 function formatDateLabel(iso) {
@@ -666,7 +692,7 @@ function appendMessage(m, scroll = true, prepend = false) {
   inner.appendChild(bubble);
   const timeEl = document.createElement("div");
   timeEl.className = "msg-time";
-  timeEl.textContent = `${formatTime(m.created_at)}${pending ? " · в очереди" : ""}`;
+  timeEl.textContent = `${formatTime(m.created_at)}${pending ? ` · ${pendingStatusLabel()}` : ""}`;
   inner.appendChild(timeEl);
   row.appendChild(inner);
   if (prepend) {
@@ -1038,13 +1064,14 @@ listen("message-sent", (e) => {
 listen("message-status-updated", (e) => {
   const { id, status } = e.payload ?? {};
   if (id && status) updateMessageStatus(id, status);
+  if (activeContactId) refreshChatStatus(true);
 });
 listen("contacts-updated", async () => {
-  debouncedRefresh();
   if (activeContactId) {
-    await refreshChatStatus(true);
+    await refreshChatStatus(false);
     await syncActiveChatMessages();
   }
+  debouncedRefresh();
 });
 
 $("media-viewer-close")?.addEventListener("click", closeMediaViewer);

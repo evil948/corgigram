@@ -7,8 +7,10 @@ use corgigram_storage::MessageRecord;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-pub const MAX_ATTACHMENT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
+/// WebRTC SCTP data channel safe payload budget (plain bytes before encryption).
+pub const LIVE_PLAIN_MAX_BYTES: usize = 48_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingAttachment {
@@ -36,7 +38,7 @@ impl OutgoingAttachment {
             bail!("empty attachment");
         }
         if self.data.len() > MAX_ATTACHMENT_BYTES {
-            bail!("файл «{}» больше 4 МБ", self.name);
+            bail!("файл «{}» больше 20 МБ", self.name);
         }
         Ok(())
     }
@@ -92,6 +94,14 @@ pub fn payload_to_bytes(payload: &ChatPayload) -> Result<Vec<u8>> {
 
 pub fn bytes_to_payload(bytes: &[u8]) -> ChatPayload {
     ChatPayload::from_bytes(bytes).unwrap_or_else(|_| ChatPayload::from_legacy_plaintext(bytes))
+}
+
+/// Media and large payloads must use Firebase mailbox — SCTP data channel cannot carry them.
+pub fn prefers_mailbox_delivery(payload: &ChatPayload, plain_len: usize) -> bool {
+    match payload {
+        ChatPayload::Text { .. } => plain_len > LIVE_PLAIN_MAX_BYTES,
+        ChatPayload::File { .. } | ChatPayload::Album { .. } => true,
+    }
 }
 
 pub fn message_record_from_payload(
@@ -258,5 +268,24 @@ mod tests {
             ChatPayload::Text { body } => assert_eq!(body, "legacy text"),
             _ => panic!("expected text"),
         }
+    }
+
+    #[test]
+    fn media_prefers_mailbox() {
+        let payload = ChatPayload::File {
+            name: "x.gif".into(),
+            mime: "image/gif".into(),
+            data: vec![1, 2, 3],
+            caption: Some("hi".into()),
+        };
+        assert!(prefers_mailbox_delivery(&payload, 10));
+        let text = ChatPayload::Text {
+            body: "short".into(),
+        };
+        assert!(!prefers_mailbox_delivery(&text, 10));
+        let long = ChatPayload::Text {
+            body: "x".repeat(50_000),
+        };
+        assert!(prefers_mailbox_delivery(&long, 50_000));
     }
 }

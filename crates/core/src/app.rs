@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::chat_media::{
-    self, bytes_to_payload, message_record_from_payload, payload_to_bytes, save_payload_attachments,
+    self, bytes_to_payload, message_record_from_payload, payload_to_bytes,
+    prefers_mailbox_delivery, save_payload_attachments,
 };
 use crate::config::AppConfig;
 use crate::signaling::{FirebaseSignaling, MailboxEntry};
@@ -812,9 +813,6 @@ impl CorgigramApp {
         let _ = self.poll_connectivity().await;
         messages.extend(self.recv_live_messages().await.unwrap_or_default());
         let _ = self.exchange_pending_ice().await;
-        if connecting {
-            let _ = self.exchange_pending_ice().await;
-        }
         let fingerprint_after = self.contacts_fingerprint();
         Ok(BackgroundTickResult {
             contacts_changed: fingerprint_before != fingerprint_after
@@ -1370,7 +1368,7 @@ impl CorgigramApp {
                     if let Some(mut answer) = pending.take() {
                         answer.peer.close().await;
                         drop(pending);
-                        self.set_connect_backoff(&contact_id, 8).await;
+                        self.set_connect_backoff(&contact_id, 2).await;
                     }
                 }
             }
@@ -1385,7 +1383,7 @@ impl CorgigramApp {
                     if let Some(mut offer) = pending.take() {
                         offer.peer.close().await;
                         drop(pending);
-                        self.set_connect_backoff(&contact_id, 8).await;
+                        self.set_connect_backoff(&contact_id, 2).await;
                     }
                 }
             }
@@ -1459,11 +1457,17 @@ impl CorgigramApp {
         let record =
             message_record_from_payload(&msg_id, contact_id, "out", "pending", payload);
 
-        if let Some(sent) = self
-            .try_send_payload_bytes(contact_id, &plain, &msg_id, &record)
-            .await?
-        {
-            return Ok(sent);
+        if !prefers_mailbox_delivery(payload, plain.len()) {
+            match self
+                .try_send_payload_bytes(contact_id, &plain, &msg_id, &record)
+                .await
+            {
+                Ok(Some(sent)) => return Ok(sent),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("live send failed, queueing to mailbox: {error:#}");
+                }
+            }
         }
 
         self.queue_offline_payload(contact_id, &plain, &record).await
@@ -1492,10 +1496,13 @@ impl CorgigramApp {
         }
 
         let encrypted = active.session.encrypt(plain)?;
-        active
+        if let Err(error) = active
             .peer
             .send(&WireMessage::EncryptedChat { ciphertext: encrypted }.to_bytes()?)
-            .await?;
+            .await
+        {
+            return Err(error);
+        }
 
         let mut record = display.clone();
         record.id = msg_id.to_string();
@@ -1669,6 +1676,9 @@ impl CorgigramApp {
                 .decode(&item.body)
                 .unwrap_or_else(|_| item.body.as_bytes().to_vec());
             let payload = bytes_to_payload(&plain);
+            if prefers_mailbox_delivery(&payload, plain.len()) {
+                continue;
+            }
             let display = message_record_from_payload(
                 &item.id,
                 &item.contact_id,
@@ -1681,7 +1691,12 @@ impl CorgigramApp {
                 .await?
                 .is_some()
             {
-                self.storage.update_message_status(&item.id, "sent")?;
+                if !matches!(
+                    self.storage.get_message_status(&item.id)?,
+                    Some(status) if status == "queued_mailbox"
+                ) {
+                    self.storage.update_message_status(&item.id, "sent")?;
+                }
                 self.storage.delete_outbox(&item.id)?;
             }
         }

@@ -1,5 +1,6 @@
 mod updater;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -10,10 +11,19 @@ use corgigram_core::{
 };
 use corgigram_storage::{ContactRecord, MessageRecord};
 use serde::Deserialize;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 
 struct AppState {
     app: SharedApp,
+}
+
+static OFFLINE_MARKED: AtomicBool = AtomicBool::new(false);
+
+async fn mark_offline(app: &SharedApp) {
+    if OFFLINE_MARKED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    app.read().await.go_offline().await.ok();
 }
 
 #[derive(Debug, Deserialize)]
@@ -458,6 +468,17 @@ pub fn run() {
 
             let tick_app = poll_app.clone();
             let tick_handle = app.handle().clone();
+            let offline_on_close = poll_app.clone();
+            if let Some(window) = app.get_webview_window("main") {
+                window.on_window_event(move |event| {
+                    if matches!(event, WindowEvent::CloseRequested { .. }) {
+                        let app = offline_on_close.clone();
+                        tauri::async_runtime::spawn(async move {
+                            mark_offline(&app).await;
+                        });
+                    }
+                });
+            }
             tauri::async_runtime::spawn(async move {
                 let mut avatar_counter = 0u32;
                 let mut sleep_ms = 250u64;
@@ -502,10 +523,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error running Corgigram")
         .run(move |_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                tauri::async_runtime::block_on(async {
-                    exit_app.read().await.go_offline().await.ok();
-                });
+            match event {
+                RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+                    tauri::async_runtime::block_on(async {
+                        mark_offline(&exit_app).await;
+                    });
+                }
+                _ => {}
             }
         });
 }

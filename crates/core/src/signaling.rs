@@ -55,7 +55,7 @@ impl PresenceEntry {
             return false;
         }
         let now = chrono::Utc::now().timestamp_millis();
-        now - self.ts < 90_000
+        now - self.ts < 45_000
     }
 }
 

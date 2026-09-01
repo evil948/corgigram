@@ -108,7 +108,7 @@ function msgContactId(m) {
 }
 
 function isPendingStatus(status) {
-  return status === "pending" || status === "queued_local" || status === "queued_mailbox";
+  return status === "queued_local" || status === "queued_mailbox";
 }
 
 function updateComposePlaceholder() {
@@ -871,8 +871,9 @@ $("btn-safety").onclick = async () => {
 };
 
 async function readFileAsBase64(file) {
-  if (file.size > 4 * 1024 * 1024) {
-    throw new Error(`«${file.name}» больше 4 МБ`);
+  const maxBytes = 20 * 1024 * 1024;
+  if (file.size > maxBytes) {
+    throw new Error(`«${file.name}» больше 20 МБ`);
   }
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);

@@ -14,16 +14,8 @@ if [ -f "$ROOT/.tauri/updater.key" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ];
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 fi
 
-SAVED_SIGN_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
-SAVED_SIGN_PASS="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
-unset TAURI_SIGNING_PRIVATE_KEY
-unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-
 echo "==> Building AppImage (NO_STRIP=1 for Arch/CachyOS)"
 cargo tauri build
-
-export TAURI_SIGNING_PRIVATE_KEY="$SAVED_SIGN_KEY"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$SAVED_SIGN_PASS"
 
 APPIMAGE="$(ls -1 "$ROOT"/target/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
 if [ -z "$APPIMAGE" ]; then

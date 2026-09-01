@@ -9,17 +9,8 @@ export NO_STRIP=1
 source "$ROOT/scripts/lib/tauri.sh"
 
 cd "$ROOT/apps/desktop"
-# Sign only after Wayland repack — tauri build must not sign a bundle we replace.
-SAVED_SIGN_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
-SAVED_SIGN_PASS="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
-unset TAURI_SIGNING_PRIVATE_KEY
-unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-
 # tauri-action invokes this script as: build-appimage-ci.sh build --target ...
 run_tauri "$@"
-
-export TAURI_SIGNING_PRIVATE_KEY="$SAVED_SIGN_KEY"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$SAVED_SIGN_PASS"
 
 APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/Corgigram_*.AppImage 2>/dev/null | head -1)"
 if [ -z "$APPIMAGE" ]; then

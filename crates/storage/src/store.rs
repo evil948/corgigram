@@ -246,6 +246,15 @@ impl Storage {
         Ok(())
     }
 
+    pub fn mark_delivered_if_queued(&self, id: &str) -> Result<bool, StorageError> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE messages SET status = 'delivered' WHERE id = ?1 AND direction = 'out' AND status = 'queued_mailbox'",
+            params![id],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn list_messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>, StorageError> {
         self.list_messages_page(contact_id, None, 10_000)
     }

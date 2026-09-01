@@ -37,6 +37,12 @@ pub struct ConnectPing {
     pub ts: i64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct DeliveryAck {
+    pub from: String,
+    pub ts: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PresenceEntry {
     pub online: bool,
@@ -323,6 +329,53 @@ impl FirebaseSignaling {
         }
         out.sort_by_key(|(_, p)| p.ts);
         Ok(out)
+    }
+
+    pub async fn publish_delivery_ack(
+        &self,
+        sender_id: &str,
+        msg_id: &str,
+        from_user_id: &str,
+    ) -> Result<()> {
+        self.client
+            .put(self.url(&format!("delivery_acks/{sender_id}/{msg_id}")))
+            .json(&json!({
+                "from": from_user_id,
+                "ts": chrono::Utc::now().timestamp_millis()
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn list_delivery_acks(&self, user_id: &str) -> Result<Vec<(String, DeliveryAck)>> {
+        let url = self.url(&format!("delivery_acks/{user_id}"));
+        let resp = self.client.get(&url).send().await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(vec![]);
+        }
+        let value: serde_json::Value = resp.error_for_status()?.json().await?;
+        let Some(obj) = value.as_object() else {
+            return Ok(vec![]);
+        };
+        let mut out = Vec::new();
+        for (id, entry) in obj {
+            if let Ok(parsed) = serde_json::from_value::<DeliveryAck>(entry.clone()) {
+                out.push((id.clone(), parsed));
+            }
+        }
+        out.sort_by_key(|(_, ack)| ack.ts);
+        Ok(out)
+    }
+
+    pub async fn delete_delivery_ack(&self, user_id: &str, msg_id: &str) -> Result<()> {
+        let _ = self
+            .client
+            .delete(self.url(&format!("delivery_acks/{user_id}/{msg_id}")))
+            .send()
+            .await;
+        Ok(())
     }
 
     pub async fn delete_mailbox_ping(&self, recipient_id: &str, from_user_id: &str) -> Result<()> {

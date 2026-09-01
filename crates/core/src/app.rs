@@ -93,6 +93,8 @@ pub struct AppSnapshot {
 pub struct BackgroundTickResult {
     pub messages: Vec<MessageRecord>,
     pub contacts_changed: bool,
+    pub status_updates: Vec<(String, String)>,
+    pub connecting: bool,
 }
 
 pub use chat_media::{AttachmentData, OutgoingAttachment};
@@ -188,16 +190,6 @@ impl CorgigramApp {
             *id = Some(contact_id.clone());
         }
         *self.active.lock().await = Some(chat);
-        let _ = self.mark_mailbox_queued_as_sent(&contact_id);
-    }
-
-    fn mark_mailbox_queued_as_sent(&self, contact_id: &str) -> Result<()> {
-        for msg in self.storage.list_messages(contact_id)? {
-            if msg.direction == "out" && msg.status == "queued_mailbox" {
-                self.storage.update_message_status(&msg.id, "sent")?;
-            }
-        }
-        Ok(())
     }
 
     fn connecting_contact_id(&self) -> Option<String> {
@@ -268,6 +260,8 @@ impl CorgigramApp {
             if let (Ok(me), Ok(fb)) = (self.my_user_id(), self.firebase()) {
                 fb.publish_connect_ping(&wanted_id, &me).await.ok();
             }
+            let _ = self.poll_signaling().await;
+            let _ = self.exchange_pending_ice().await;
         }
     }
 
@@ -811,16 +805,42 @@ impl CorgigramApp {
 
     pub async fn background_tick(&self) -> Result<BackgroundTickResult> {
         let fingerprint_before = self.contacts_fingerprint();
+        let connecting = self.connecting_contact_id().is_some();
         let mut messages = self.sync_all_mailboxes().await.unwrap_or_default();
+        let status_updates = self.sync_delivery_acks().await.unwrap_or_default();
         let _ = self.sync_invitations().await;
         let _ = self.poll_connectivity().await;
         messages.extend(self.recv_live_messages().await.unwrap_or_default());
         let _ = self.exchange_pending_ice().await;
+        if connecting {
+            let _ = self.exchange_pending_ice().await;
+        }
         let fingerprint_after = self.contacts_fingerprint();
         Ok(BackgroundTickResult {
-            contacts_changed: fingerprint_before != fingerprint_after || !messages.is_empty(),
+            contacts_changed: fingerprint_before != fingerprint_after
+                || !messages.is_empty()
+                || !status_updates.is_empty(),
             messages,
+            status_updates,
+            connecting,
         })
+    }
+
+    async fn sync_delivery_acks(&self) -> Result<Vec<(String, String)>> {
+        if !self.config.firebase_configured() {
+            return Ok(vec![]);
+        }
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        let acks = fb.list_delivery_acks(&me).await?;
+        let mut updated = Vec::new();
+        for (msg_id, _ack) in acks {
+            if self.storage.mark_delivered_if_queued(&msg_id)? {
+                updated.push((msg_id.clone(), "delivered".to_string()));
+            }
+            fb.delete_delivery_ack(&me, &msg_id).await.ok();
+        }
+        Ok(updated)
     }
 
     async fn build_ice_config(&self) -> IceConfig {
@@ -1571,6 +1591,7 @@ impl CorgigramApp {
     ) -> Result<Option<MessageRecord>> {
         if self.storage.message_exists(msg_id)? {
             fb.delete_mailbox(me, msg_id).await.ok();
+            fb.publish_delivery_ack(&entry.from, msg_id, me).await.ok();
             return Ok(None);
         }
         let contact = match self.storage.get_contact(&entry.from)? {
@@ -1590,6 +1611,7 @@ impl CorgigramApp {
         };
         let record = self.ingest_incoming_plain(msg_id, &entry.from, &plain)?;
         fb.delete_mailbox(me, msg_id).await.ok();
+        fb.publish_delivery_ack(&entry.from, msg_id, me).await.ok();
         Ok(Some(record))
     }
 

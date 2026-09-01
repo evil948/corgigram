@@ -17,6 +17,7 @@ struct AppState {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AttachmentInput {
     name: String,
     mime: String,
@@ -446,22 +447,32 @@ pub fn run() {
             let tick_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut avatar_counter = 0u32;
+                let mut sleep_ms = 250u64;
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                     avatar_counter = avatar_counter.wrapping_add(1);
                     let tick = tick_app.read().await.background_tick().await;
                     let Ok(BackgroundTickResult {
                         messages,
                         contacts_changed,
+                        status_updates,
+                        connecting,
                     }) = tick
                     else {
                         continue;
                     };
+                    sleep_ms = if connecting { 100 } else { 250 };
                     for msg in &messages {
                         let _ = tick_handle.emit("message-received", msg);
                     }
                     if !messages.is_empty() {
                         let _ = tick_handle.emit("messages-updated", &messages);
+                    }
+                    for (msg_id, status) in status_updates {
+                        let _ = tick_handle.emit(
+                            "message-status-updated",
+                            serde_json::json!({ "id": msg_id, "status": status }),
+                        );
                     }
                     if contacts_changed {
                         let _ = tick_handle.emit("contacts-updated", ());

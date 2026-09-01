@@ -895,6 +895,10 @@ listen("message-sent", (e) => {
   if (msg) updateMessageStatus(msg.id, msg.status);
   debouncedRefresh();
 });
+listen("message-status-updated", (e) => {
+  const { id, status } = e.payload ?? {};
+  if (id && status) updateMessageStatus(id, status);
+});
 listen("contacts-updated", async () => {
   debouncedRefresh();
   if (activeContactId) {

@@ -39,6 +39,15 @@
         }
       }
     },
+    "delivery_acks": {
+      "$userId": {
+        ".read": true,
+        "$msgId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
     "connect_pings": {
       "$userId": {
         ".read": true,

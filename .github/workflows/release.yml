@@ -23,6 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify version sync
+        run: |
+          CARGO_VER=$(grep '^version' Cargo.toml | head -1 | awk '{print $3}' | tr -d '"')
+          TAURI_VER=$(jq -r .version apps/desktop/tauri.conf.json)
+          if [ "$CARGO_VER" != "$TAURI_VER" ]; then
+            echo "::error::Cargo.toml ($CARGO_VER) != tauri.conf.json ($TAURI_VER)"
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2

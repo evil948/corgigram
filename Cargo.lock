@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-crypto"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-desktop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-mobile"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "corgigram-core",
@@ -870,8 +870,9 @@ dependencies = [
 
 [[package]]
 name = "corgigram-protocol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
+ "base64 0.22.1",
  "corgigram-crypto",
  "serde",
  "serde_json",
@@ -880,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-storage"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -894,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-transport"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytes",

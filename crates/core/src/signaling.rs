@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine;
 use corgigram_crypto::PreKeyBundle;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -13,9 +14,12 @@ pub struct SignalingSdp {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct MailboxEntry {
+    #[serde(default)]
     pub ciphertext: String,
     pub from: String,
     pub ts: i64,
+    #[serde(default)]
+    pub chunk_count: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -248,18 +252,128 @@ impl FirebaseSignaling {
         from_user_id: &str,
         ciphertext: &[u8],
     ) -> Result<()> {
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, ciphertext);
+        const MAX_CHUNK_BYTES: usize = 6_000_000;
+        if ciphertext.len() <= MAX_CHUNK_BYTES {
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, ciphertext);
+            self.client
+                .put(self.url(&format!("mailboxes/{recipient_id}/{msg_id}")))
+                .json(&json!({
+                    "ciphertext": encoded,
+                    "from": from_user_id,
+                    "ts": chrono::Utc::now().timestamp(),
+                    "chunk_count": 0
+                }))
+                .send()
+                .await?
+                .error_for_status()?;
+            return Ok(());
+        }
+
+        let chunks: Vec<&[u8]> = ciphertext.chunks(MAX_CHUNK_BYTES).collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            self.publish_mailbox_chunk(recipient_id, msg_id, index, chunk)
+                .await?;
+        }
         self.client
             .put(self.url(&format!("mailboxes/{recipient_id}/{msg_id}")))
             .json(&json!({
-                "ciphertext": encoded,
+                "ciphertext": "",
                 "from": from_user_id,
-                "ts": chrono::Utc::now().timestamp()
+                "ts": chrono::Utc::now().timestamp(),
+                "chunk_count": chunks.len()
             }))
             .send()
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    async fn publish_mailbox_chunk(
+        &self,
+        recipient_id: &str,
+        msg_id: &str,
+        index: usize,
+        chunk: &[u8],
+    ) -> Result<()> {
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, chunk);
+        self.client
+            .put(self.url(&format!(
+                "mailbox_chunks/{recipient_id}/{msg_id}/{index}"
+            )))
+            .json(&json!({ "data": encoded }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn fetch_mailbox_ciphertext(
+        &self,
+        recipient_id: &str,
+        msg_id: &str,
+        entry: &MailboxEntry,
+    ) -> Result<Vec<u8>> {
+        if entry.chunk_count == 0 {
+            return base64::engine::general_purpose::STANDARD
+                .decode(&entry.ciphertext)
+                .context("decode mailbox ciphertext");
+        }
+        let mut bytes = Vec::new();
+        for index in 0..entry.chunk_count {
+            let url = self.url(&format!(
+                "mailbox_chunks/{recipient_id}/{msg_id}/{index}"
+            ));
+            let resp = self.client.get(&url).send().await?;
+            let value: serde_json::Value = resp.error_for_status()?.json().await?;
+            let encoded = value
+                .get("data")
+                .and_then(|v| v.as_str())
+                .context("mailbox chunk missing data")?;
+            bytes.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .context("decode mailbox chunk")?,
+            );
+        }
+        Ok(bytes)
+    }
+
+    pub async fn mailbox_entry_exists(&self, recipient_id: &str, msg_id: &str) -> Result<bool> {
+        let url = self.url(&format!("mailboxes/{recipient_id}/{msg_id}"));
+        let resp = self.client.get(&url).send().await?;
+        Ok(resp.status().is_success())
+    }
+
+    pub async fn delete_mailbox(&self, user_id: &str, msg_id: &str) -> Result<()> {
+        if let Ok(Some(entry)) = self.fetch_mailbox_entry(user_id, msg_id).await {
+            if entry.chunk_count > 0 {
+                for index in 0..entry.chunk_count {
+                    let _ = self
+                        .client
+                        .delete(self.url(&format!(
+                            "mailbox_chunks/{user_id}/{msg_id}/{index}"
+                        )))
+                        .send()
+                        .await;
+                }
+            }
+        }
+        let _ = self
+            .client
+            .delete(self.url(&format!("mailboxes/{user_id}/{msg_id}")))
+            .send()
+            .await;
+        Ok(())
+    }
+
+    pub async fn fetch_mailbox_entry(
+        &self,
+        user_id: &str,
+        msg_id: &str,
+    ) -> Result<Option<MailboxEntry>> {
+        self.fetch_json(&self.url(&format!("mailboxes/{user_id}/{msg_id}")))
+            .await
     }
 
     pub async fn list_mailbox(&self, user_id: &str) -> Result<Vec<(String, MailboxEntry)>> {
@@ -280,15 +394,6 @@ impl FirebaseSignaling {
         }
         out.sort_by_key(|(_, e)| e.ts);
         Ok(out)
-    }
-
-    pub async fn delete_mailbox(&self, user_id: &str, msg_id: &str) -> Result<()> {
-        let _ = self
-            .client
-            .delete(self.url(&format!("mailboxes/{user_id}/{msg_id}")))
-            .send()
-            .await;
-        Ok(())
     }
 
     /// Lightweight ping so the recipient's client knows to pull mailbox immediately.

@@ -808,11 +808,15 @@ impl CorgigramApp {
         let fingerprint_before = self.contacts_fingerprint();
         let connecting = self.connecting_contact_id().is_some();
         let mut messages = self.sync_all_mailboxes().await.unwrap_or_default();
-        let status_updates = self.sync_delivery_acks().await.unwrap_or_default();
+        let mut status_updates = self.sync_delivery_acks().await.unwrap_or_default();
+        status_updates.extend(self.sync_mailbox_consumed().await.unwrap_or_default());
         let _ = self.sync_invitations().await;
         let _ = self.poll_connectivity().await;
         messages.extend(self.recv_live_messages().await.unwrap_or_default());
         let _ = self.exchange_pending_ice().await;
+        if connecting {
+            let _ = self.exchange_pending_ice().await;
+        }
         let fingerprint_after = self.contacts_fingerprint();
         Ok(BackgroundTickResult {
             contacts_changed: fingerprint_before != fingerprint_after
@@ -837,6 +841,29 @@ impl CorgigramApp {
                 updated.push((msg_id.clone(), "delivered".to_string()));
             }
             fb.delete_delivery_ack(&me, &msg_id).await.ok();
+        }
+        Ok(updated)
+    }
+
+    /// Sender-side: if our mailbox entry was consumed by the recipient, mark delivered.
+    async fn sync_mailbox_consumed(&self) -> Result<Vec<(String, String)>> {
+        if !self.config.firebase_configured() {
+            return Ok(vec![]);
+        }
+        let fb = self.firebase()?;
+        let queued = self.storage.list_outbound_by_status("queued_mailbox")?;
+        let mut updated = Vec::new();
+        for msg in queued {
+            if fb
+                .mailbox_entry_exists(&msg.contact_id, &msg.id)
+                .await
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if self.storage.mark_delivered_if_queued(&msg.id)? {
+                updated.push((msg.id.clone(), "delivered".to_string()));
+            }
         }
         Ok(updated)
     }
@@ -1613,7 +1640,10 @@ impl CorgigramApp {
             Some(contact) => contact,
             None => return Ok(None),
         };
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(&entry.ciphertext) {
+        let bytes = match fb
+            .fetch_mailbox_ciphertext(me, msg_id, entry)
+            .await
+        {
             Ok(bytes) => bytes,
             Err(_) => return Ok(None),
         };

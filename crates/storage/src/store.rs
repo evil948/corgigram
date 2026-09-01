@@ -267,6 +267,16 @@ impl Storage {
         Ok(status)
     }
 
+    pub fn list_outbound_by_status(&self, status: &str) -> Result<Vec<MessageRecord>, StorageError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
+             FROM messages WHERE direction = 'out' AND status = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![status], map_message_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+    }
+
     pub fn list_messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>, StorageError> {
         self.list_messages_page(contact_id, None, 10_000)
     }

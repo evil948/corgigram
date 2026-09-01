@@ -652,12 +652,15 @@ function appendMessage(m, scroll = true, prepend = false) {
   const pending = isPendingStatus(m.status);
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  const caption = mediaCaptionText(m);
-  if (caption) {
-    const cap = document.createElement("div");
-    cap.className = "bubble-caption";
-    cap.textContent = caption;
-    bubble.appendChild(cap);
+  const kind = m.kind || "text";
+  if (kind !== "text") {
+    const caption = mediaCaptionText(m);
+    if (caption) {
+      const cap = document.createElement("div");
+      cap.className = "bubble-caption";
+      cap.textContent = caption;
+      bubble.appendChild(cap);
+    }
   }
   const inner = document.createElement("div");
   inner.appendChild(bubble);
@@ -673,7 +676,6 @@ function appendMessage(m, scroll = true, prepend = false) {
   } else {
     box.appendChild(row);
   }
-  const kind = m.kind || "text";
   if (kind !== "text") {
     row.classList.add("msg-has-media");
     pendingMediaByRow.set(row, m);

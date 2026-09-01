@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use base64::Engine;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Plaintext chat envelope (serialized to JSON, then encrypted E2E).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -10,7 +11,7 @@ pub enum ChatPayload {
     File {
         name: String,
         mime: String,
-        /// Raw bytes (not base64) — serde_json encodes as byte array.
+        #[serde(with = "serde_bytes_b64")]
         data: Vec<u8>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
@@ -27,7 +28,36 @@ pub enum ChatPayload {
 pub struct AttachmentItem {
     pub name: String,
     pub mime: String,
+    #[serde(with = "serde_bytes_b64")]
     pub data: Vec<u8>,
+}
+
+mod serde_bytes_b64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(encoded) => base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(serde::de::Error::custom),
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .map(|item| {
+                    item.as_u64()
+                        .and_then(|n| u8::try_from(n).ok())
+                        .ok_or_else(|| serde::de::Error::custom("invalid byte in attachment data"))
+                })
+                .collect(),
+            _ => Err(serde::de::Error::custom(
+                "attachment data must be base64 string or byte array",
+            )),
+        }
+    }
 }
 
 impl ChatPayload {
@@ -60,7 +90,19 @@ mod tests {
             caption: Some("look".into()),
         };
         let bytes = payload.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(json.contains("\"data\":\"AQID\""));
         let decoded = ChatPayload::from_bytes(&bytes).unwrap();
         assert_eq!(payload, decoded);
+    }
+
+    #[test]
+    fn legacy_byte_array_payload_still_parses() {
+        let json = r#"{"kind":"file","name":"x.gif","mime":"image/gif","data":[1,2,3]}"#;
+        let decoded = ChatPayload::from_bytes(json.as_bytes()).unwrap();
+        match decoded {
+            ChatPayload::File { data, .. } => assert_eq!(data, vec![1, 2, 3]),
+            _ => panic!("expected file"),
+        }
     }
 }

@@ -471,7 +471,7 @@ pub fn run() {
             let offline_on_close = poll_app.clone();
             if let Some(window) = app.get_webview_window("main") {
                 window.on_window_event(move |event| {
-                    if matches!(event, WindowEvent::CloseRequested { .. }) {
+                    if matches!(event, WindowEvent::Destroyed) {
                         let app = offline_on_close.clone();
                         tauri::async_runtime::spawn(async move {
                             mark_offline(&app).await;
@@ -523,13 +523,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error running Corgigram")
         .run(move |_app_handle, event| {
-            match event {
-                RunEvent::ExitRequested { .. } | RunEvent::Exit => {
-                    tauri::async_runtime::block_on(async {
-                        mark_offline(&exit_app).await;
-                    });
-                }
-                _ => {}
+            if let RunEvent::Exit = event {
+                tauri::async_runtime::block_on(async {
+                    mark_offline(&exit_app).await;
+                });
             }
         });
 }

@@ -30,6 +30,18 @@
         }
       }
     },
+    "mailbox_chunks": {
+      "$userId": {
+        ".read": true,
+        "$msgId": {
+          ".read": true,
+          "$chunkId": {
+            ".read": true,
+            ".write": true
+          }
+        }
+      }
+    },
     "mailbox_pings": {
       "$userId": {
         ".read": true,

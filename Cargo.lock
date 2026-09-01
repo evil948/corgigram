@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-crypto"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-desktop"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1017,6 +1017,7 @@ dependencies = [
  "corgigram-core",
  "corgigram-storage",
  "image",
+ "notify-rust",
  "serde",
  "serde_json",
  "tauri",
@@ -1031,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-mobile"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "corgigram-core",
@@ -1045,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-protocol"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "base64 0.22.1",
  "corgigram-crypto",
@@ -1056,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-storage"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1071,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "corgigram-transport"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "bytes",

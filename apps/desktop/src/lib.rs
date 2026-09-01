@@ -599,12 +599,27 @@ async fn maybe_native_notify(app: &tauri::AppHandle, shared: &SharedApp, msg: &M
         .map(|c| c.display_name.as_str())
         .unwrap_or(&msg.contact_id);
     let body = inbound_preview(msg);
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(&body)
-        .show();
+    show_desktop_notification(app, title, &body);
+}
+
+fn show_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = notify_rust::Notification::new()
+            .appname("korki")
+            .summary(title)
+            .body(body)
+            .show();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show();
+    }
 }
 
 pub fn run() {

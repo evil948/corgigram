@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -81,6 +82,7 @@ pub struct AppSnapshot {
     pub firebase_database_url_override: Option<String>,
     pub firebase_uses_default_url: bool,
     pub outbox_count: usize,
+    pub contact_presence: HashMap<String, bool>,
 }
 
 struct PendingOffer {
@@ -115,6 +117,8 @@ pub struct CorgigramApp {
     pending_offer: Arc<Mutex<Option<PendingOffer>>>,
     pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
     pending_invitations: Arc<RwLock<Vec<InvitationInfo>>>,
+    contact_presence: Arc<RwLock<HashMap<String, bool>>>,
+    last_presence_heartbeat: Arc<Mutex<Option<DateTime<Utc>>>>,
 }
 
 impl CorgigramApp {
@@ -141,6 +145,8 @@ impl CorgigramApp {
             pending_offer: Arc::new(Mutex::new(None)),
             pending_answer: Arc::new(Mutex::new(None)),
             pending_invitations: Arc::new(RwLock::new(Vec::new())),
+            contact_presence: Arc::new(RwLock::new(HashMap::new())),
+            last_presence_heartbeat: Arc::new(Mutex::new(None)),
         };
         app.load_identity()?;
         app.reconcile_stale_outbox()?;
@@ -226,6 +232,11 @@ impl CorgigramApp {
             }
         }
         let _ = self.ensure_connect_started(&wanted_id).await;
+        if self.config.firebase_configured() {
+            if let (Ok(me), Ok(fb)) = (self.my_user_id(), self.firebase()) {
+                fb.publish_connect_ping(&wanted_id, &me).await.ok();
+            }
+        }
     }
 
     pub async fn prefetch_turn(&self) {
@@ -237,6 +248,111 @@ impl CorgigramApp {
             *id = None;
         }
         *self.active.lock().await = None;
+    }
+
+    /// App startup: mark online and ping contacts to nudge WebRTC connect.
+    pub async fn announce_online(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        fb.publish_presence(&me, true).await?;
+        for contact in self.storage.list_contacts()? {
+            fb.publish_connect_ping(&contact.user_id, &me).await.ok();
+        }
+        Ok(())
+    }
+
+    /// Refresh own presence timestamp (called periodically while app runs).
+    pub async fn heartbeat_presence(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let me = self.my_user_id()?;
+        self.firebase()?.publish_presence(&me, true).await
+    }
+
+    async fn maybe_heartbeat_presence(&self) {
+        let mut last = self.last_presence_heartbeat.lock().await;
+        let now = Utc::now();
+        let due = last
+            .map(|t| (now - t).num_seconds() >= 25)
+            .unwrap_or(true);
+        if due {
+            let _ = self.heartbeat_presence().await;
+            *last = Some(now);
+        }
+    }
+
+    /// App shutdown: mark offline and tear down live sessions.
+    pub async fn go_offline(&self) -> Result<()> {
+        if self.config.firebase_configured() {
+            if let Ok(me) = self.my_user_id() {
+                let fb = self.firebase()?;
+                fb.publish_presence(&me, false).await.ok();
+                fb.clear_signaling(&me).await.ok();
+            }
+        }
+        self.disconnect_active().await;
+        *self.pending_offer.lock().await = None;
+        *self.pending_answer.lock().await = None;
+        Ok(())
+    }
+
+    async fn handle_connect_pings(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        let pings = fb.list_connect_pings(&me).await?;
+        for (from_id, _ping) in pings {
+            if self.storage.get_contact(&from_id)?.is_none() {
+                fb.delete_connect_ping(&me, &from_id).await.ok();
+                continue;
+            }
+            let wanted = self
+                .wanted_contact_id
+                .read()
+                .ok()
+                .and_then(|g| g.clone());
+            if wanted.as_deref() != Some(from_id.as_str()) {
+                fb.delete_connect_ping(&me, &from_id).await.ok();
+                continue;
+            }
+            if should_initiate_offer(&me, &from_id) {
+                let _ = self.ensure_connect_started(&from_id).await;
+            } else {
+                let _ = self.poll_signaling().await;
+            }
+            fb.delete_connect_ping(&me, &from_id).await.ok();
+        }
+        Ok(())
+    }
+
+    async fn sync_contact_presence(&self) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let fb = self.firebase()?;
+        let mut cache = HashMap::new();
+        for contact in self.storage.list_contacts()? {
+            let online = match fb.fetch_presence(&contact.user_id).await? {
+                Some(entry) => entry.is_online(),
+                None => false,
+            };
+            cache.insert(contact.user_id.clone(), online);
+        }
+        if let Ok(mut stored) = self.contact_presence.write() {
+            *stored = cache.clone();
+        }
+        if let Some(active_id) = self.live_contact_id.read().ok().and_then(|g| g.clone()) {
+            if cache.get(&active_id) == Some(&false) {
+                self.disconnect_active().await;
+            }
+        }
+        Ok(())
     }
 
     pub fn update_config(&mut self, config: AppConfig) -> Result<()> {
@@ -268,6 +384,12 @@ impl CorgigramApp {
             firebase_database_url_override: self.config.firebase_database_url_override(),
             firebase_uses_default_url: self.config.uses_default_firebase_url(),
             outbox_count: self.storage.outbox_count()?,
+            contact_presence: self
+                .contact_presence
+                .read()
+                .ok()
+                .map(|g| g.clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -1360,6 +1482,9 @@ impl CorgigramApp {
     /// WebRTC connect maintenance — isolated from mailbox sync so delivery never blocks on ICE.
     pub async fn poll_connectivity(&self) -> Result<Option<String>> {
         self.recover_stale_handshakes().await;
+        self.maybe_heartbeat_presence().await;
+        let _ = self.handle_connect_pings().await;
+        let _ = self.sync_contact_presence().await;
         let _ = self.maintain_wanted_connection().await;
 
         if let Ok(Some(contact_id)) = self.poll_signaling().await {

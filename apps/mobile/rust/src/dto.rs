@@ -44,6 +44,8 @@ pub struct SnapshotDto {
     pub outbox_count: i32,
     #[serde(default)]
     pub pending_invitations: Vec<InvitationDto>,
+    #[serde(default)]
+    pub contact_presence: std::collections::HashMap<String, bool>,
 }
 
 #[frb(non_final)]
@@ -122,6 +124,7 @@ impl From<corgigram_core::AppSnapshot> for SnapshotDto {
                     display_name: i.display_name,
                 })
                 .collect(),
+            contact_presence: s.contact_presence,
         }
     }
 }

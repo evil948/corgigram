@@ -297,6 +297,7 @@ pub fn run() {
     let corgigram = CorgigramApp::open_default().expect("failed to open app data");
     let shared: SharedApp = Arc::new(tokio::sync::RwLock::new(corgigram));
     let poll_app = shared.clone();
+    let exit_app = shared.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -345,6 +346,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let app = sync_app.read().await;
                 let _ = app.sync_directory().await;
+                let _ = app.announce_online().await;
                 let _ = app.sync_avatar_downloads().await;
                 app.prefetch_turn().await;
             });
@@ -402,6 +404,13 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error running Corgigram");
+        .build(tauri::generate_context!())
+        .expect("error running Corgigram")
+        .run(move |_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                tauri::async_runtime::block_on(async {
+                    exit_app.read().await.go_offline().await.ok();
+                });
+            }
+        });
 }

@@ -39,6 +39,21 @@
         }
       }
     },
+    "connect_pings": {
+      "$userId": {
+        ".read": true,
+        "$fromUserId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "presence": {
+      "$userId": {
+        ".read": true,
+        ".write": true
+      }
+    },
     "directory": {
       "$userId": {
         ".read": true,

@@ -32,6 +32,28 @@ pub struct DirectoryEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ConnectPing {
+    pub from: String,
+    pub ts: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PresenceEntry {
+    pub online: bool,
+    pub ts: i64,
+}
+
+impl PresenceEntry {
+    pub fn is_online(&self) -> bool {
+        if !self.online {
+            return false;
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        now - self.ts < 90_000
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MailboxPing {
     pub from: String,
     pub msg_id: String,
@@ -307,6 +329,65 @@ impl FirebaseSignaling {
         let _ = self
             .client
             .delete(self.url(&format!("mailbox_pings/{recipient_id}/{from_user_id}")))
+            .send()
+            .await;
+        Ok(())
+    }
+
+    pub async fn publish_presence(&self, user_id: &str, online: bool) -> Result<()> {
+        self.client
+            .put(self.url(&format!("presence/{user_id}")))
+            .json(&json!({
+                "online": online,
+                "ts": chrono::Utc::now().timestamp_millis()
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn fetch_presence(&self, user_id: &str) -> Result<Option<PresenceEntry>> {
+        self.fetch_json(&self.url(&format!("presence/{user_id}"))).await
+    }
+
+    pub async fn publish_connect_ping(&self, recipient_id: &str, from_user_id: &str) -> Result<()> {
+        self.client
+            .put(self.url(&format!("connect_pings/{recipient_id}/{from_user_id}")))
+            .json(&json!({
+                "from": from_user_id,
+                "ts": chrono::Utc::now().timestamp_millis()
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn list_connect_pings(&self, user_id: &str) -> Result<Vec<(String, ConnectPing)>> {
+        let url = self.url(&format!("connect_pings/{user_id}"));
+        let resp = self.client.get(&url).send().await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(vec![]);
+        }
+        let value: serde_json::Value = resp.error_for_status()?.json().await?;
+        let Some(obj) = value.as_object() else {
+            return Ok(vec![]);
+        };
+        let mut out = Vec::new();
+        for (from_id, entry) in obj {
+            if let Ok(parsed) = serde_json::from_value::<ConnectPing>(entry.clone()) {
+                out.push((from_id.clone(), parsed));
+            }
+        }
+        out.sort_by_key(|(_, p)| p.ts);
+        Ok(out)
+    }
+
+    pub async fn delete_connect_ping(&self, recipient_id: &str, from_user_id: &str) -> Result<()> {
+        let _ = self
+            .client
+            .delete(self.url(&format!("connect_pings/{recipient_id}/{from_user_id}")))
             .send()
             .await;
         Ok(())

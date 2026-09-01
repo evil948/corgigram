@@ -192,7 +192,7 @@ function renderContacts() {
     meta.className = "contact-meta";
     meta.innerHTML = `
       <div class="contact-name">${escapeHtml(c.display_name)}</div>
-      <div class="contact-preview">@${escapeHtml(c.user_id)}</div>`;
+      <div class="contact-preview">@${escapeHtml(c.user_id)}${snapshot.contact_presence?.[c.user_id] ? " · онлайн" : ""}</div>`;
     li.appendChild(meta);
     li.onclick = () => selectContact(c.user_id, c.display_name, c.avatar_data_url);
     list.appendChild(li);
@@ -217,12 +217,13 @@ async function selectContact(id, name, avatarUrl = null) {
 
 async function refreshChatStatus() {
   snapshot = await invoke("get_snapshot");
+    const peerOnline = snapshot.contact_presence?.[activeContactId] === true;
   const connected = snapshot.connected_contact_id === activeContactId;
   const connecting = snapshot.connecting_contact_id === activeContactId;
   $("chat-status").innerHTML = connected
     ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · онлайн`
     : connecting
-      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · подключение…`
+      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${peerOnline ? "подключение…" : "ожидание собеседника"}`
       : `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${snapshot.firebase_configured ? "offline mailbox" : "не подключено"}`;
   updateConnectButton();
   updateOutboxBadge();

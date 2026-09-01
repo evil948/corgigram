@@ -62,13 +62,18 @@
           <ul id="contact-list" class="contact-list" role="list"></ul>
 
           <footer class="profile-chip">
-            <button type="button" id="btn-open-profile" class="profile-chip-btn" aria-label="Открыть профиль">
-              <div id="profile-avatar" class="avatar avatar-chip"></div>
-              <div class="profile-chip-meta">
-                <span id="profile-name" class="profile-name"></span>
-                <span id="profile-id" class="profile-id"></span>
-              </div>
-            </button>
+            <div class="profile-chip-row">
+              <button type="button" id="btn-open-profile" class="profile-chip-btn" aria-label="Открыть профиль">
+                <div id="profile-avatar" class="avatar avatar-chip"></div>
+                <div class="profile-chip-meta">
+                  <span id="profile-name" class="profile-name"></span>
+                  <span id="profile-id" class="profile-id"></span>
+                </div>
+              </button>
+              <button type="button" id="btn-open-settings-chip" class="icon-btn profile-settings-btn" title="Настройки" aria-label="Настройки">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+              </button>
+            </div>
             <span id="outbox-badge" class="outbox-badge hidden" title="Сообщения в очереди"></span>
           </footer>
         </aside>
@@ -156,7 +161,7 @@
       <button type="button" id="btn-remove-avatar" class="btn-ghost btn-danger-text">Удалить аватар</button>
     </div>
     <div class="modal-actions">
-      <button type="button" id="btn-open-settings" class="btn-ghost">Настройки</button>
+      <button type="button" id="btn-open-settings" class="btn-ghost btn-settings-link">Настройки</button>
       <button type="button" class="btn-ghost" onclick="closeModal('modal-profile')">Отмена</button>
       <button type="button" id="btn-save-profile" class="btn-primary">Сохранить</button>
     </div>

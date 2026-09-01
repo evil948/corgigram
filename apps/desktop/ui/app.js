@@ -11,6 +11,21 @@ const avatarCache = new Map();
 let refreshTimer = null;
 let loadingOlder = false;
 let hasMoreMessages = true;
+const INITIAL_MSG_LIMIT = 30;
+const pendingMediaByRow = new WeakMap();
+
+const mediaLoadObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const row = entry.target;
+    mediaLoadObserver.unobserve(row);
+    const bubble = row.querySelector(".bubble");
+    const message = pendingMediaByRow.get(row);
+    if (!bubble || !message || bubble.dataset.mediaLoaded) continue;
+    bubble.dataset.mediaLoaded = "1";
+    loadMessageMedia(message, bubble);
+  }
+}, { root: null, rootMargin: "240px 0px" });
 
 function $(id) { return document.getElementById(id); }
 
@@ -263,18 +278,26 @@ async function selectContact(id, name) {
   show($("chat-view"));
   setChatOpen(true);
   $("chat-title").textContent = name;
-  const avatar = await ensureContactAvatar(id);
-  setAvatarEl($("chat-avatar"), name, avatar);
-  await setWantedContact(id);
-  await refreshChatStatus();
-  await loadMessages();
-  if (snapshot.firebase_configured) {
-    const incoming = await invoke("sync_mailbox", { contactId: id });
-    for (const m of incoming) appendMessage(m);
+  setAvatarEl($("chat-avatar"), name, avatarCache.get(id) ?? null);
+  ensureContactAvatar(id).then((url) => {
+    if (activeContactId === id) setAvatarEl($("chat-avatar"), name, url);
+  });
+
+  const wanted = setWantedContact(id);
+  const loaded = loadMessages();
+  await Promise.all([wanted, loaded]);
+  refreshChatStatus(true);
+
+  if (snapshot?.firebase_configured) {
+    invoke("sync_mailbox", { contactId: id })
+      .then((incoming) => {
+        for (const m of incoming) appendMessage(m);
+      })
+      .catch(() => {});
   }
 }
 
-async function refreshChatStatus() {
+async function refreshChatStatus(skipContactsRender = false) {
   snapshot = await invoke("get_snapshot");
   const peerOnline = snapshot.contact_presence?.[activeContactId] === true;
   const connected = snapshot.connected_contact_id === activeContactId;
@@ -314,18 +337,27 @@ async function refreshChatStatus() {
   updateConnectButton();
   updateOutboxBadge();
   updateProfileFooter();
-  renderContacts();
+  if (!skipContactsRender) renderContacts();
 }
 
 async function loadMessages() {
   if (!activeContactId) return;
   hasMoreMessages = true;
-  const msgs = await invoke("get_messages_page", { contactId: activeContactId, beforeCreatedAt: null, limit: 50 });
   const box = $("messages");
   box.innerHTML = "";
-  hasMoreMessages = msgs.length >= 50;
-  for (const m of msgs) appendMessage(m, false);
-  box.scrollTop = box.scrollHeight;
+  box.classList.add("is-loading");
+  try {
+    const msgs = await invoke("get_messages_page", {
+      contactId: activeContactId,
+      beforeCreatedAt: null,
+      limit: INITIAL_MSG_LIMIT,
+    });
+    hasMoreMessages = msgs.length >= INITIAL_MSG_LIMIT;
+    for (const m of msgs) appendMessage(m, false);
+    box.scrollTop = box.scrollHeight;
+  } finally {
+    box.classList.remove("is-loading");
+  }
 }
 
 async function loadOlderMessages() {
@@ -341,9 +373,9 @@ async function loadOlderMessages() {
     const msgs = await invoke("get_messages_page", {
       contactId: activeContactId,
       beforeCreatedAt: before,
-      limit: 50,
+      limit: INITIAL_MSG_LIMIT,
     });
-    hasMoreMessages = msgs.length >= 50;
+    hasMoreMessages = msgs.length >= INITIAL_MSG_LIMIT;
     for (const m of msgs) appendMessage(m, false, true);
     box.scrollTop = box.scrollHeight - prevHeight;
   } finally {
@@ -353,7 +385,11 @@ async function loadOlderMessages() {
 
 async function syncActiveChatMessages() {
   if (!activeContactId) return;
-  const msgs = await invoke("get_messages", { contactId: activeContactId });
+  const msgs = await invoke("get_messages_page", {
+    contactId: activeContactId,
+    beforeCreatedAt: null,
+    limit: 40,
+  });
   const box = $("messages");
   const existing = new Set([...box.querySelectorAll(".msg-row")].map(r => r.dataset.msgId));
   for (const m of msgs) {
@@ -406,7 +442,7 @@ function fileIconSvg() {
   return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
 }
 
-async function renderMessageMedia(m, container) {
+async function loadMessageMedia(m, container) {
   const kind = m.kind || "text";
   if (kind === "text") return;
 
@@ -483,10 +519,13 @@ function appendMessage(m, scroll = true, prepend = false) {
   } else {
     box.appendChild(row);
   }
-  renderMessageMedia(m, bubble).then(() => {
-    if (scroll) box.scrollTop = box.scrollHeight;
-  });
-  if (scroll && (m.kind || "text") === "text") box.scrollTop = box.scrollHeight;
+  const kind = m.kind || "text";
+  if (kind !== "text") {
+    row.classList.add("msg-has-media");
+    pendingMediaByRow.set(row, m);
+    mediaLoadObserver.observe(row);
+  }
+  if (scroll) box.scrollTop = box.scrollHeight;
 }
 
 $("btn-onboard-avatar").onclick = () => $("input-onboard-avatar").click();
@@ -792,7 +831,7 @@ $("btn-back-contacts").onclick = () => {
   renderContacts();
 };
 
-$("btn-open-settings").onclick = async () => {
+async function openSettingsModal() {
   closeModal("modal-profile");
   snapshot = await invoke("get_snapshot");
   $("input-firebase-url").value = snapshot.firebase_database_url_override ?? "";
@@ -803,7 +842,10 @@ $("btn-open-settings").onclick = async () => {
     ? `Сейчас: встроенный URL (${snapshot.firebase_database_url})`
     : "Сейчас: свой URL. Очистите поле, чтобы вернуть встроенный.";
   openModal("modal-settings");
-};
+}
+
+$("btn-open-settings").onclick = openSettingsModal;
+$("btn-open-settings-chip").onclick = openSettingsModal;
 
 $("btn-save-settings").onclick = async () => {
   await invoke("save_config", {

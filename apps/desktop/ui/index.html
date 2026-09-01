@@ -4,25 +4,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Corgigram</title>
+  <link rel="preconnect" href="https://api.fontshare.com" crossorigin />
+  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <!-- Onboarding -->
   <div id="onboarding" class="screen">
-    <div class="onboard-card">
+    <div class="noise-overlay" aria-hidden="true"></div>
+    <div class="onboard-card orbit-card">
       <div class="onboard-avatar-wrap">
-        <button type="button" id="btn-onboard-avatar" class="avatar avatar-xl avatar-btn" title="Выбрать фото">
-          <span id="onboard-avatar-fallback">🐕</span>
+        <button type="button" id="btn-onboard-avatar" class="avatar avatar-xl avatar-btn" title="Выбрать фото" aria-label="Выбрать фото профиля">
+          <span id="onboard-avatar-fallback" aria-hidden="true">🐕</span>
           <img id="onboard-avatar-img" class="hidden" alt="" />
         </button>
         <span class="avatar-hint">Нажмите, чтобы добавить фото</span>
         <input id="input-onboard-avatar" type="file" accept="image/*" class="hidden" />
       </div>
-      <h1>Corgigram</h1>
-      <p class="subtitle">Приватный чат для своих. Сообщения видите только вы.</p>
-      <label>Имя пользователя (ID)</label>
+      <p class="onboard-brand">Corgigram</p>
+      <h1>Приватный чат для своих</h1>
+      <p class="subtitle">Сообщения видите только вы и собеседник. Ключи хранятся на устройстве.</p>
+      <label for="input-user-id">Имя пользователя (ID)</label>
       <input id="input-user-id" type="text" placeholder="alice" autocomplete="username" />
-      <label>Никнейм</label>
+      <label for="input-display-name">Никнейм</label>
       <input id="input-display-name" type="text" placeholder="Alice" autocomplete="nickname" />
       <button id="btn-create-identity" class="btn-primary">Создать профиль</button>
     </div>
@@ -30,75 +34,100 @@
 
   <!-- Main app -->
   <div id="app" class="app hidden">
-    <aside class="sidebar">
-      <header class="sidebar-header">
-        <div class="sidebar-title">
-          <span class="logo-small">Corgigram</span>
-        </div>
-        <div class="search-box">
-          <input id="search-contacts" type="search" placeholder="Поиск" />
-        </div>
-      </header>
-
-      <div id="invitations-panel" class="invitations-panel hidden"></div>
-
-      <div class="sidebar-actions">
-        <button id="btn-add-contact" class="btn-ghost">+ Контакт</button>
-        <button id="btn-show-qr" class="btn-ghost">Мой QR</button>
-      </div>
-
-      <ul id="contact-list" class="contact-list"></ul>
-
-      <footer class="sidebar-footer">
-        <button type="button" id="btn-open-profile" class="profile-card">
-          <div id="profile-avatar" class="avatar avatar-sm"></div>
-          <div class="profile-meta">
-            <span id="profile-name" class="profile-name"></span>
-            <span id="profile-id" class="profile-id"></span>
-          </div>
-          <span class="profile-edit-btn" title="Редактировать профиль">✎</span>
-        </button>
-        <span id="outbox-badge" class="outbox-badge hidden" title="Сообщения в очереди"></span>
-      </footer>
-    </aside>
-
-    <main class="chat-pane">
-      <div id="empty-state" class="empty-state">
-        <div class="empty-icon-wrap">
-          <div class="empty-icon">🔒</div>
-        </div>
-        <h2>Выберите чат</h2>
-        <p>End-to-end шифрование · ключи только у вас</p>
-      </div>
-
-      <div id="chat-view" class="chat-view hidden">
-        <header class="chat-header">
-          <div class="chat-header-info">
-            <div id="chat-avatar" class="avatar"></div>
-            <div>
-              <h2 id="chat-title"></h2>
-              <p id="chat-status" class="e2e-badge">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
-                Защищено E2E
-              </p>
+    <div class="orbit-canvas">
+      <div class="noise-overlay" aria-hidden="true"></div>
+      <div id="orbit-workspace" class="orbit-workspace">
+        <!-- Contacts card -->
+        <aside class="orbit-card orbit-contacts" aria-label="Контакты">
+          <div class="contacts-top">
+            <div class="orbit-brand" aria-hidden="true">Corgigram</div>
+            <div class="search-pill">
+              <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input id="search-contacts" type="search" placeholder="Поиск контактов…" aria-label="Поиск контактов" />
+            </div>
+            <div class="contacts-toolbar">
+              <button type="button" id="btn-add-contact" class="toolbar-btn" title="Добавить контакт" aria-label="Добавить контакт">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                <span>Контакт</span>
+              </button>
+              <button type="button" id="btn-show-qr" class="toolbar-btn" title="Мой QR" aria-label="Показать QR-код">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM17 17h3v3h-3z"/></svg>
+                <span>QR</span>
+              </button>
             </div>
           </div>
-          <div class="chat-header-actions">
-            <button id="btn-connect" class="btn-accent-sm">Подключиться</button>
-            <button id="btn-safety" class="icon-btn" title="Safety number">🛡</button>
+
+          <div id="invitations-panel" class="invitations-panel hidden" role="region" aria-label="Приглашения"></div>
+
+          <ul id="contact-list" class="contact-list" role="list"></ul>
+
+          <footer class="profile-chip">
+            <button type="button" id="btn-open-profile" class="profile-chip-btn" aria-label="Открыть профиль">
+              <div id="profile-avatar" class="avatar avatar-chip"></div>
+              <div class="profile-chip-meta">
+                <span id="profile-name" class="profile-name"></span>
+                <span id="profile-id" class="profile-id"></span>
+              </div>
+            </button>
+            <span id="outbox-badge" class="outbox-badge hidden" title="Сообщения в очереди"></span>
+          </footer>
+        </aside>
+
+        <!-- Chat card -->
+        <main class="orbit-card orbit-chat" aria-label="Чат">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-icon-wrap">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h2>Выберите чат</h2>
+            <p>End-to-end шифрование · ключи только у вас</p>
           </div>
-        </header>
 
-        <div id="messages" class="messages"></div>
+          <div id="chat-view" class="chat-view hidden">
+            <header class="chat-header">
+              <div class="chat-header-left">
+                <button type="button" id="btn-back-contacts" class="icon-btn back-btn" title="К контактам" aria-label="Назад к списку контактов">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <div class="chat-peer">
+                  <div class="chat-avatar-wrap">
+                    <div id="chat-avatar" class="avatar"></div>
+                    <span id="chat-online-dot" class="online-dot hidden" aria-hidden="true"></span>
+                  </div>
+                  <div>
+                    <h2 id="chat-title"></h2>
+                    <p id="chat-status" class="chat-substatus"></p>
+                  </div>
+                </div>
+              </div>
+              <div class="chat-header-actions">
+                <div id="e2e-pill" class="e2e-pill" role="status">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 15-4-4 1.41-1.41L11 13.17l5.59-5.59L18 9l-7 7z"/></svg>
+                  <span id="e2e-pill-text">Защищено E2E</span>
+                </div>
+                <button type="button" id="btn-connect" class="btn-accent-sm hidden">Подключиться</button>
+                <button type="button" id="btn-safety" class="icon-btn" title="Safety number" aria-label="Показать safety number">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </button>
+              </div>
+            </header>
 
-        <footer class="compose-bar">
-          <textarea id="message-input" rows="1" placeholder="Сообщение…"></textarea>
-          <button id="btn-send" class="send-btn" title="Отправить">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
-        </footer>
+            <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+
+            <footer class="compose-bar">
+              <div class="compose-inner">
+                <label for="message-input" class="visually-hidden">Сообщение</label>
+                <textarea id="message-input" rows="1" placeholder="Напишите сообщение…"></textarea>
+                <button type="button" id="btn-send" class="send-btn" title="Отправить" aria-label="Отправить сообщение">
+                  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
+              </div>
+            </footer>
+          </div>
+          <div class="chat-glow" aria-hidden="true"></div>
+        </main>
       </div>
-    </main>
+    </div>
   </div>
 
   <!-- Modals -->
@@ -106,15 +135,15 @@
     <h3>Мой профиль</h3>
     <p class="modal-hint">Аватар хранится локально и синхронизируется с контактами через Firebase в зашифрованном виде (E2E).</p>
     <div class="profile-edit-layout">
-      <button type="button" id="btn-profile-avatar" class="avatar avatar-lg avatar-btn">
+      <button type="button" id="btn-profile-avatar" class="avatar avatar-lg avatar-btn" aria-label="Изменить аватар">
         <span id="profile-edit-fallback"></span>
         <img id="profile-edit-img" class="hidden" alt="" />
       </button>
       <input id="input-profile-avatar" type="file" accept="image/*" class="hidden" />
       <div class="profile-edit-fields">
-        <label>Никнейм</label>
+        <label for="input-profile-name">Никнейм</label>
         <input id="input-profile-name" type="text" maxlength="64" />
-        <label>ID (не меняется)</label>
+        <label for="input-profile-user-id">ID (не меняется)</label>
         <input id="input-profile-user-id" type="text" readonly class="readonly" />
       </div>
     </div>
@@ -123,34 +152,35 @@
     </div>
     <div class="modal-actions">
       <button type="button" id="btn-open-settings" class="btn-ghost">Настройки</button>
-      <button class="btn-ghost" onclick="closeModal('modal-profile')">Отмена</button>
-      <button id="btn-save-profile" class="btn-primary">Сохранить</button>
+      <button type="button" class="btn-ghost" onclick="closeModal('modal-profile')">Отмена</button>
+      <button type="button" id="btn-save-profile" class="btn-primary">Сохранить</button>
     </div>
   </dialog>
 
   <dialog id="modal-add-contact">
     <h3>Добавить контакт</h3>
-    <div class="modal-tabs">
-      <button type="button" id="tab-add-by-id" class="modal-tab active">По ID</button>
-      <button type="button" id="tab-add-by-bundle" class="modal-tab">QR / JSON</button>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" id="tab-add-by-id" class="modal-tab active" role="tab" aria-selected="true">По ID</button>
+      <button type="button" id="tab-add-by-bundle" class="modal-tab" role="tab" aria-selected="false">QR / JSON</button>
     </div>
 
-    <div id="panel-add-by-id">
+    <div id="panel-add-by-id" role="tabpanel">
       <p class="modal-hint">Введите ID собеседника. Ему придёт приглашение — добавлять вас вручную не нужно.</p>
-      <label>ID пользователя</label>
+      <label for="input-contact-id">ID пользователя</label>
       <input id="input-contact-id" type="text" placeholder="bob" autocomplete="off" />
       <div class="modal-actions">
-        <button class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
-        <button id="btn-add-by-id" class="btn-primary">Найти и добавить</button>
+        <button type="button" class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
+        <button type="button" id="btn-add-by-id" class="btn-primary">Найти и добавить</button>
       </div>
     </div>
 
-    <div id="panel-add-by-bundle" class="hidden">
+    <div id="panel-add-by-bundle" class="hidden" role="tabpanel">
       <p class="modal-hint">Вставьте JSON bundle от собеседника или отсканируйте QR</p>
+      <label for="input-bundle">Bundle JSON</label>
       <textarea id="input-bundle" rows="8" placeholder='{"identity":{...},"signature":"..."}'></textarea>
       <div class="modal-actions">
-        <button class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
-        <button id="btn-save-contact" class="btn-primary">Добавить</button>
+        <button type="button" class="btn-ghost" onclick="closeModal('modal-add-contact')">Отмена</button>
+        <button type="button" id="btn-save-contact" class="btn-primary">Добавить</button>
       </div>
     </div>
   </dialog>
@@ -159,44 +189,44 @@
     <h3>Ваш QR для pairing</h3>
     <div id="qr-container"></div>
     <p class="modal-hint">Покажите собеседнику. Проверьте safety number после добавления.</p>
-    <button class="btn-primary" onclick="closeModal('modal-qr')">Закрыть</button>
+    <button type="button" class="btn-primary" onclick="closeModal('modal-qr')">Закрыть</button>
   </dialog>
 
   <dialog id="modal-connect">
     <h3>WebRTC подключение</h3>
     <p class="modal-hint">Обмен SDP. С Firebase — автоматически.</p>
-    <label>Offer SDP</label>
+    <label for="input-offer-sdp">Offer SDP</label>
     <textarea id="input-offer-sdp" rows="4" readonly></textarea>
-    <label>Answer SDP</label>
+    <label for="input-answer-sdp">Answer SDP</label>
     <textarea id="input-answer-sdp" rows="4" placeholder="Вставьте answer от собеседника"></textarea>
     <div class="modal-actions">
-      <button id="btn-copy-offer" class="btn-ghost">Копировать offer</button>
-      <button id="btn-finish-connect" class="btn-primary">Завершить</button>
+      <button type="button" id="btn-copy-offer" class="btn-ghost">Копировать offer</button>
+      <button type="button" id="btn-finish-connect" class="btn-primary">Завершить</button>
     </div>
     <hr />
-    <label>Или принять входящий offer</label>
+    <label for="input-incoming-offer">Или принять входящий offer</label>
     <textarea id="input-incoming-offer" rows="3" placeholder="Offer от собеседника"></textarea>
-    <button id="btn-answer-connect" class="btn-accent-sm">Ответить (answerer)</button>
+    <button type="button" id="btn-answer-connect" class="btn-accent-sm">Ответить (answerer)</button>
   </dialog>
 
   <dialog id="modal-safety">
     <h3>Safety number</h3>
     <p class="modal-hint">Сверьте с собеседником — как в Signal.</p>
     <code id="safety-number" class="safety-code"></code>
-    <button class="btn-primary" onclick="closeModal('modal-safety')">OK</button>
+    <button type="button" class="btn-primary" onclick="closeModal('modal-safety')">OK</button>
   </dialog>
 
   <dialog id="modal-settings">
     <h3>Настройки</h3>
     <p class="modal-hint">Firebase включён по умолчанию.</p>
-    <label>Firebase Database URL</label>
+    <label for="input-firebase-url">Firebase Database URL</label>
     <input id="input-firebase-url" type="url" placeholder="" />
     <p id="firebase-default-hint" class="modal-hint"></p>
-    <label>Auth token (опционально)</label>
-    <input id="input-firebase-token" type="password" placeholder="secret or id token" />
+    <label for="input-firebase-token">Auth token (опционально)</label>
+    <input id="input-firebase-token" type="password" placeholder="secret or id token" autocomplete="off" />
     <div class="modal-actions">
-      <button class="btn-ghost" onclick="closeModal('modal-settings')">Отмена</button>
-      <button id="btn-save-settings" class="btn-primary">Сохранить</button>
+      <button type="button" class="btn-ghost" onclick="closeModal('modal-settings')">Отмена</button>
+      <button type="button" id="btn-save-settings" class="btn-primary">Сохранить</button>
     </div>
   </dialog>
 

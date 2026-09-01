@@ -168,12 +168,22 @@ function updateConnectButton() {
     return;
   }
   btn.classList.remove("hidden");
-  btn.textContent = "Подключиться (SDP)";
+  btn.textContent = "SDP";
   btn.title = "Ручной обмен SDP";
 }
 
 async function setWantedContact(contactId) {
   await invoke("set_wanted_contact", { contactId: contactId ?? null });
+}
+
+function contactPreview(c) {
+  const online = snapshot.contact_presence?.[c.user_id];
+  if (online) return "в сети";
+  return `@${c.user_id}`;
+}
+
+function setChatOpen(open) {
+  $("orbit-workspace")?.classList.toggle("chat-open", open);
 }
 
 function renderContacts() {
@@ -183,18 +193,32 @@ function renderContacts() {
   for (const c of snapshot.contacts) {
     if (q && !c.display_name.toLowerCase().includes(q) && !c.user_id.toLowerCase().includes(q)) continue;
     const li = document.createElement("li");
-    li.className = "contact-item" + (c.user_id === activeContactId ? " active" : "");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "contact-item" + (c.user_id === activeContactId ? " active" : "");
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "avatar-wrap";
     const avatar = document.createElement("div");
     avatar.className = "avatar";
     setAvatarEl(avatar, c.display_name, c.avatar_data_url);
-    li.appendChild(avatar);
+    avatarWrap.appendChild(avatar);
+    if (snapshot.contact_presence?.[c.user_id]) {
+      const dot = document.createElement("span");
+      dot.className = "online-dot";
+      dot.title = "В сети";
+      avatarWrap.appendChild(dot);
+    }
+    btn.appendChild(avatarWrap);
     const meta = document.createElement("div");
     meta.className = "contact-meta";
     meta.innerHTML = `
-      <div class="contact-name">${escapeHtml(c.display_name)}</div>
-      <div class="contact-preview">@${escapeHtml(c.user_id)}${snapshot.contact_presence?.[c.user_id] ? " · онлайн" : ""}</div>`;
-    li.appendChild(meta);
-    li.onclick = () => selectContact(c.user_id, c.display_name, c.avatar_data_url);
+      <div class="contact-row-top">
+        <div class="contact-name">${escapeHtml(c.display_name)}</div>
+      </div>
+      <div class="contact-preview">${escapeHtml(contactPreview(c))}</div>`;
+    btn.appendChild(meta);
+    btn.onclick = () => selectContact(c.user_id, c.display_name, c.avatar_data_url);
+    li.appendChild(btn);
     list.appendChild(li);
   }
 }
@@ -204,6 +228,7 @@ async function selectContact(id, name, avatarUrl = null) {
   renderContacts();
   hide($("empty-state"));
   show($("chat-view"));
+  setChatOpen(true);
   $("chat-title").textContent = name;
   setAvatarEl($("chat-avatar"), name, avatarUrl);
   await setWantedContact(id);
@@ -217,17 +242,45 @@ async function selectContact(id, name, avatarUrl = null) {
 
 async function refreshChatStatus() {
   snapshot = await invoke("get_snapshot");
-    const peerOnline = snapshot.contact_presence?.[activeContactId] === true;
+  const peerOnline = snapshot.contact_presence?.[activeContactId] === true;
   const connected = snapshot.connected_contact_id === activeContactId;
   const connecting = snapshot.connecting_contact_id === activeContactId;
-  $("chat-status").innerHTML = connected
-    ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · онлайн`
-    : connecting
-      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${peerOnline ? "подключение…" : "ожидание собеседника"}`
-      : `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg> Защищено E2E · ${snapshot.firebase_configured ? "offline mailbox" : "не подключено"}`;
+
+  const onlineDot = $("chat-online-dot");
+  if (peerOnline && connected) {
+    show(onlineDot);
+  } else {
+    hide(onlineDot);
+  }
+
+  const statusEl = $("chat-status");
+  if (connected) {
+    statusEl.textContent = "Прямое соединение · в сети";
+  } else if (connecting) {
+    statusEl.textContent = peerOnline ? "Подключение…" : "Ожидание собеседника";
+  } else {
+    statusEl.textContent = snapshot.firebase_configured
+      ? "Offline mailbox · доставка при появлении в сети"
+      : "Не подключено";
+  }
+
+  const pill = $("e2e-pill");
+  const pillText = $("e2e-pill-text");
+  pill.classList.remove("is-live", "is-connecting");
+  if (connected) {
+    pill.classList.add("is-live");
+    pillText.textContent = "Защищено E2E · онлайн";
+  } else if (connecting) {
+    pill.classList.add("is-connecting");
+    pillText.textContent = "Защищено E2E · подключение";
+  } else {
+    pillText.textContent = "Защищено E2E";
+  }
+
   updateConnectButton();
   updateOutboxBadge();
   updateProfileFooter();
+  renderContacts();
 }
 
 async function loadMessages() {
@@ -260,7 +313,34 @@ function updateMessageStatus(msgId, status) {
   const timeEl = row.querySelector(".msg-time");
   if (!timeEl) return;
   const base = timeEl.textContent.split(" · ")[0];
-  timeEl.textContent = pending ? `${base} · ⏳` : base;
+  timeEl.textContent = pending ? `${base} · в очереди` : base;
+}
+
+function formatDateLabel(iso) {
+  try {
+    const d = new Date(iso);
+    const today = new Date();
+    const sameDay =
+      d.getDate() === today.getDate() &&
+      d.getMonth() === today.getMonth() &&
+      d.getFullYear() === today.getFullYear();
+    if (sameDay) return "Сегодня";
+    return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  } catch {
+    return "";
+  }
+}
+
+function ensureDateSeparator(box, iso) {
+  const label = formatDateLabel(iso);
+  if (!label) return;
+  const key = `date-${label}`;
+  if (box.querySelector(`[data-date-key="${key}"]`)) return;
+  const sep = document.createElement("div");
+  sep.className = "msg-date";
+  sep.dataset.dateKey = key;
+  sep.textContent = label;
+  box.appendChild(sep);
 }
 
 function appendMessage(m, scroll = true) {
@@ -269,15 +349,23 @@ function appendMessage(m, scroll = true) {
     updateMessageStatus(m.id, m.status);
     return;
   }
+  ensureDateSeparator(box, m.created_at);
   const row = document.createElement("div");
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
   row.dataset.msgId = m.id;
   const pending = m.status === "pending" || m.status === "queued_local";
-  row.innerHTML = `
-    <div>
-      <div class="bubble">${escapeHtml(m.body)}</div>
-      <div class="msg-time">${formatTime(m.created_at)}${pending ? " · ⏳" : ""}</div>
-    </div>`;
+  const inner = document.createElement("div");
+  inner.innerHTML = `
+    <div class="bubble">${escapeHtml(m.body)}</div>
+    <div class="msg-time">${formatTime(m.created_at)}${pending ? " · в очереди" : ""}</div>`;
+  if (m.direction === "in" && activeContactId) {
+    const c = snapshot?.contacts?.find(x => x.user_id === activeContactId);
+    const av = document.createElement("div");
+    av.className = "avatar msg-avatar";
+    setAvatarEl(av, c?.display_name ?? "?", c?.avatar_data_url);
+    row.appendChild(av);
+  }
+  row.appendChild(inner);
   box.appendChild(row);
   if (scroll) box.scrollTop = box.scrollHeight;
 }
@@ -485,6 +573,15 @@ async function sendCurrentMessage() {
     alert("Не удалось отправить: " + e);
   }
 }
+
+$("btn-back-contacts").onclick = () => {
+  activeContactId = null;
+  setChatOpen(false);
+  hide($("chat-view"));
+  show($("empty-state"));
+  setWantedContact(null);
+  renderContacts();
+};
 
 $("btn-open-settings").onclick = async () => {
   closeModal("modal-profile");

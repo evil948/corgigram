@@ -10,3 +10,4 @@ squashfs-root/
 apps/mobile/.dart_tool/
 apps/mobile/build/
 apps/desktop/gen/
+.superdesign/tmp/

@@ -666,12 +666,13 @@ impl CorgigramApp {
         let contact = self.add_contact_from_bundle(bundle)?;
         let owner_id = contact.user_id.clone();
         let me = self.my_user_id()?;
-        let my_name = self
-            .identity
-            .as_ref()
-            .map(|id| id.public.display_name.clone())
-            .unwrap_or_default();
-        fb.publish_invitation(&owner_id, &me, &my_name).await.ok();
+        let identity = self.identity.as_ref().context("no identity")?;
+        let my_name = identity.public.display_name.clone();
+        let my_bundle = identity.prekey_bundle();
+        let _ = self.sync_directory().await;
+        fb.publish_invitation(&owner_id, &me, &my_name, &my_bundle)
+            .await
+            .ok();
         self.request_contact_avatar(&owner_id).await?;
         self.sync_avatar_downloads().await?;
         self.contacts_with_avatars()?
@@ -730,10 +731,26 @@ impl CorgigramApp {
             anyhow::bail!("contact already exists");
         }
         let fb = self.firebase()?;
-        let bundle = fb
-            .fetch_directory(&from_user_id)
-            .await?
-            .with_context(|| format!("user '{from_user_id}' not found"))?;
+        let invitation = fb.fetch_invitation(&me, &from_user_id).await?;
+        let bundle = if let Some(inv) = invitation.as_ref().and_then(|i| i.bundle.clone()) {
+            inv
+        } else {
+            let mut fetched = None;
+            for attempt in 0..5 {
+                if let Some(bundle) = fb.fetch_directory(&from_user_id).await? {
+                    fetched = Some(bundle);
+                    break;
+                }
+                if attempt < 4 {
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                }
+            }
+            fetched.with_context(|| {
+                format!(
+                    "пользователь «{from_user_id}» не найден — попросите его открыть Corgigram и нажать «Принять» снова"
+                )
+            })?
+        };
         let _contact = self.add_contact_from_bundle(bundle)?;
         fb.delete_invitation(&me, &from_user_id).await.ok();
         self.request_contact_avatar(&from_user_id).await?;

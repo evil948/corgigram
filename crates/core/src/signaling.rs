@@ -75,6 +75,8 @@ pub struct InvitationEntry {
     pub from: String,
     pub display_name: String,
     pub ts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<PreKeyBundle>,
 }
 
 #[derive(Clone)]
@@ -579,13 +581,15 @@ impl FirebaseSignaling {
         recipient_id: &str,
         from_user_id: &str,
         display_name: &str,
+        bundle: &PreKeyBundle,
     ) -> Result<()> {
         self.client
             .put(self.url(&format!("invitations/{recipient_id}/{from_user_id}")))
             .json(&json!({
                 "from": from_user_id,
                 "display_name": display_name,
-                "ts": chrono::Utc::now().timestamp()
+                "ts": chrono::Utc::now().timestamp(),
+                "bundle": bundle
             }))
             .send()
             .await
@@ -593,6 +597,15 @@ impl FirebaseSignaling {
             .error_for_status()
             .context("firebase publish invitation status")?;
         Ok(())
+    }
+
+    pub async fn fetch_invitation(
+        &self,
+        recipient_id: &str,
+        from_user_id: &str,
+    ) -> Result<Option<InvitationEntry>> {
+        self.fetch_json(&self.url(&format!("invitations/{recipient_id}/{from_user_id}")))
+            .await
     }
 
     pub async fn list_invitations(&self, user_id: &str) -> Result<Vec<(String, InvitationEntry)>> {

@@ -168,6 +168,15 @@ pub async fn save_config(
         .map_err(|e| e.to_string())
 }
 
+#[frb]
+pub async fn mark_contact_read(contact_id: String) -> Result<(), String> {
+    app()?
+        .lock()
+        .await
+        .mark_contact_read(&contact_id)
+        .map_err(|e| e.to_string())
+}
+
 #[frb(sync)]
 pub fn push_payload_new_message(sender_id: String) -> PushPayloadDto {
     corgigram_core::PushNotification::new_message(&sender_id).into()

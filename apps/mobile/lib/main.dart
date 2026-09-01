@@ -43,6 +43,11 @@ class _RootScreenState extends State<RootScreen> {
   List<MessageDto> messages = [];
   Timer? _pollTimer;
   bool connecting = false;
+  final Set<String> _seenMessageIds = {};
+  final Map<String, int> _localUnread = {};
+  String? _lastSnackContactId;
+  int _lastSnackCount = 0;
+  DateTime? _lastSnackAt;
 
   @override
   void initState() {
@@ -52,6 +57,7 @@ class _RootScreenState extends State<RootScreen> {
       final incoming = await pollIncoming();
       if (!mounted) return;
       if (incoming.isNotEmpty) {
+        _handleIncomingNotifications(incoming);
         if (activeContactId != null) {
           await _loadMessages(activeContactId!);
         }
@@ -79,11 +85,77 @@ class _RootScreenState extends State<RootScreen> {
   }
 
   Future<void> _selectContact(ContactDto c) async {
-    setState(() => activeContactId = c.userId);
+    setState(() {
+      activeContactId = c.userId;
+      _localUnread[c.userId] = 0;
+    });
     await _loadMessages(c.userId);
     final incoming = await syncMailbox(contactId: c.userId);
     if (incoming.isNotEmpty) await _loadMessages(c.userId);
   }
+
+  void _handleIncomingNotifications(List<MessageDto> incoming) {
+    for (final m in incoming) {
+      if (m.direction != 'in' || _seenMessageIds.contains(m.id)) continue;
+      _seenMessageIds.add(m.id);
+      if (m.contactId == activeContactId) continue;
+      final contact = snapshot?.contacts.cast<ContactDto?>().firstWhere(
+            (c) => c!.userId == m.contactId,
+            orElse: () => null,
+          );
+      final name = contact?.displayName ?? m.contactId;
+      setState(() {
+        _localUnread[m.contactId] = (_localUnread[m.contactId] ?? 0) + 1;
+      });
+      _showGroupedSnack(name, m);
+    }
+  }
+
+  void _showGroupedSnack(String name, MessageDto m) {
+    final now = DateTime.now();
+    final sameContact = _lastSnackContactId == m.contactId &&
+        _lastSnackAt != null &&
+        now.difference(_lastSnackAt!).inMilliseconds < 3000;
+    if (sameContact) {
+      _lastSnackCount += 1;
+    } else {
+      _lastSnackContactId = m.contactId;
+      _lastSnackCount = 1;
+    }
+    _lastSnackAt = now;
+    final preview = _previewText(m);
+    final body = _lastSnackCount > 1
+        ? '$_lastSnackCount новых сообщений'
+        : preview;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$name: $body'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Открыть',
+          onPressed: () {
+            final c = snapshot?.contacts.cast<ContactDto?>().firstWhere(
+                  (x) => x!.userId == m.contactId,
+                  orElse: () => null,
+                );
+            if (c != null) _selectContact(c);
+          },
+        ),
+      ),
+    );
+  }
+
+  String _previewText(MessageDto m) {
+    final body = m.body.trim();
+    if (body.isNotEmpty) {
+      return body.length > 60 ? '${body.substring(0, 60)}…' : body;
+    }
+    return 'Новое сообщение';
+  }
+
+  int _unreadFor(String userId) => _localUnread[userId] ?? 0;
 
   @override
   Widget build(BuildContext context) {
@@ -160,13 +232,33 @@ class _RootScreenState extends State<RootScreen> {
                   itemBuilder: (_, i) {
                     final c = contacts[i];
                     final selected = c.userId == activeContactId;
+                    final unread = _unreadFor(c.userId);
                     return ListTile(
                       selected: selected,
                       leading: CircleAvatar(
                         child: Text(_initials(c.displayName)),
                       ),
-                      title: Text(c.displayName),
+                      title: Text(
+                        c.displayName,
+                        style: unread > 0
+                            ? const TextStyle(fontWeight: FontWeight.w700)
+                            : null,
+                      ),
                       subtitle: Text(c.userId, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      trailing: unread > 0
+                          ? CircleAvatar(
+                              radius: 12,
+                              backgroundColor: AppTheme.accent,
+                              child: Text(
+                                unread > 99 ? '99+' : '$unread',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                ),
+                              ),
+                            )
+                          : null,
                       onTap: () {
                         Navigator.pop(context);
                         _selectContact(c);

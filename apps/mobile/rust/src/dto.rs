@@ -57,6 +57,18 @@ pub struct SnapshotDto {
     pub pending_invitations: Vec<InvitationDto>,
     #[serde(default)]
     pub contact_presence: std::collections::HashMap<String, bool>,
+    #[serde(default)]
+    pub unread_by_contact: std::collections::HashMap<String, i32>,
+    #[serde(default)]
+    pub chat_previews: std::collections::HashMap<String, ChatPreviewDto>,
+}
+
+#[frb(non_final)]
+pub struct ChatPreviewDto {
+    pub preview: String,
+    pub kind: String,
+    pub created_at: String,
+    pub direction: String,
 }
 
 #[frb(non_final)]
@@ -140,6 +152,26 @@ impl From<corgigram_core::AppSnapshot> for SnapshotDto {
                 })
                 .collect(),
             contact_presence: s.contact_presence,
+            unread_by_contact: s
+                .unread_by_contact
+                .into_iter()
+                .map(|(k, v)| (k, v as i32))
+                .collect(),
+            chat_previews: s
+                .chat_previews
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        ChatPreviewDto {
+                            preview: v.preview,
+                            kind: v.kind,
+                            created_at: v.created_at,
+                            direction: v.direction,
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }

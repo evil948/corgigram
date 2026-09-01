@@ -287,6 +287,14 @@
     </div>
   </div>
 
+  <div id="notification-stack" class="notification-stack hidden" role="region" aria-live="polite" aria-label="Новые сообщения"></div>
+  <div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <button type="button" id="new-messages-pill" class="new-messages-pill hidden" aria-label="Прокрутить к новым сообщениям">
+    Новые сообщения
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+
+  <script src="notifications.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

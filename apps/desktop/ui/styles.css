@@ -1,5 +1,17 @@
 /* korki — warm messenger, subtle corgi accent */
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 :root {
   --korki-accent: #e8893a;
   --korki-accent-hover: #f09a4f;
@@ -1354,7 +1366,7 @@ dialog hr { border: none; border-top: 1px solid var(--border-subtle); margin: 1.
   :root { --pad-canvas: 12px; --contacts-width: 300px; }
   .orbit-workspace { flex-direction: column; }
   .orbit-contacts { width: 100%; min-width: 0; max-height: 42vh; }
-  .orbit-chat { flex: 1; min-height: 0; }
+  .orbit-chat { flex: 1; min-height: 0; position: relative; }
   .orbit-workspace.chat-open .orbit-contacts { display: none; }
   .orbit-workspace.chat-open .orbit-chat { flex: 1; }
   .back-btn { display: flex; }
@@ -1368,4 +1380,152 @@ dialog hr { border: none; border-top: 1px solid var(--border-subtle); margin: 1.
   .chat-header { padding: 0.75rem 1rem; }
   .messages { padding: 1rem; }
   .msg-row { max-width: 88%; }
+  .notification-stack {
+    left: var(--pad-canvas);
+    right: var(--pad-canvas);
+    bottom: calc(var(--pad-canvas) + 4px);
+    max-width: none;
+  }
+}
+
+/* --- Messenger notifications --- */
+.notification-stack {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.notification-stack:not(.hidden) { pointer-events: auto; }
+
+.notify-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0.75rem 0.9rem;
+  text-align: left;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--korki-accent);
+  border-radius: var(--radius-control);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  color: var(--text-primary);
+  animation: notify-in 0.22s ease-out;
+  transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
+}
+
+.notify-card:hover {
+  background: var(--surface-raised);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.4);
+}
+
+.notify-card:focus-visible {
+  outline: 2px solid var(--korki-accent);
+  outline-offset: 2px;
+}
+
+.notify-card-top {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.notify-sender {
+  font-weight: 600;
+  font-size: 0.85rem;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notify-count {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--korki-accent);
+  background: var(--korki-accent-soft);
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+}
+
+.notify-time {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.notify-preview {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-messages-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 5.5rem;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--korki-accent);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  animation: notify-in 0.2s ease-out;
+}
+
+.new-messages-pill:hover { background: var(--surface-raised); }
+
+.contact-unread-badge {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-pill);
+  background: var(--korki-accent);
+  color: #1a1816;
+  font-size: 0.68rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.contact-preview.unread {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.contact-item.has-unread .contact-name {
+  font-weight: 700;
+}
+
+@keyframes notify-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notify-card,
+  .new-messages-pill { animation: none; }
+  .notify-card:hover { transform: none; }
 }

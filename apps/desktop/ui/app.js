@@ -3,6 +3,7 @@ const listen = window.__TAURI__?.event?.listen ?? (async () => () => {});
 
 let snapshot = null;
 let activeContactId = null;
+let appSurface = "chat";
 let pendingOnboardAvatar = null;
 let pendingProfileAvatar = null;
 let profileRemoveAvatar = false;
@@ -142,10 +143,75 @@ function updateComposePlaceholder() {
     : "Напишите сообщение…";
 }
 
+function setAppSurface(surface) {
+  appSurface = surface;
+}
+
+function markContactRead(contactId) {
+  if (!contactId) return;
+  invoke("mark_contact_read", { contactId }).catch(() => {});
+  if (snapshot?.unread_by_contact) {
+    snapshot.unread_by_contact[contactId] = 0;
+  }
+  korkiNotify?.updateDocumentTitle?.({ snapshot, activeContactId, appSurface, messagesEl: $("messages") });
+}
+
+function messagePreviewForContact(contactId) {
+  const preview = snapshot?.chat_previews?.[contactId];
+  if (!preview) return contactConnectionLabel(contactId);
+  const prefix = preview.direction === "out" ? "Вы: " : "";
+  return prefix + (preview.preview || "");
+}
+
+function sortedContacts() {
+  if (!snapshot?.contacts) return [];
+  return [...snapshot.contacts].sort((a, b) => {
+    const ta = snapshot.chat_previews?.[a.user_id]?.created_at ?? "";
+    const tb = snapshot.chat_previews?.[b.user_id]?.created_at ?? "";
+    if (ta !== tb) return tb.localeCompare(ta);
+    return a.display_name.localeCompare(b.display_name, "ru");
+  });
+}
+
+function unreadCount(contactId) {
+  return snapshot?.unread_by_contact?.[contactId] ?? 0;
+}
+
+function showNewMessagesPill() {
+  const pill = $("new-messages-pill");
+  if (pill) show(pill);
+}
+
+function hideNewMessagesPill() {
+  const pill = $("new-messages-pill");
+  if (pill) hide(pill);
+}
+
+function scrollChatToBottom(markRead = true) {
+  const box = $("messages");
+  if (!box) return;
+  box.scrollTop = box.scrollHeight;
+  hideNewMessagesPill();
+  if (markRead && activeContactId) markContactRead(activeContactId);
+}
+
 function handleIncomingMessage(msg) {
-  if (msgContactId(msg) !== activeContactId) return;
-  appendMessage(msg);
-  refreshChatStatus(true);
+  const result = korkiNotify.onInboundMessage(msg);
+  const cid = msgContactId(msg);
+
+  if (result?.append && cid === activeContactId) {
+    appendMessage(msg, result.scroll !== false);
+    if (result.showPill) showNewMessagesPill();
+    else if (result.scroll !== false) scrollChatToBottom(true);
+    refreshChatStatus(true);
+    return;
+  }
+
+  if (cid === activeContactId) {
+    refreshChatStatus(true);
+  } else {
+    debouncedRefresh();
+  }
 }
 
 function debouncedRefresh() {
@@ -194,6 +260,7 @@ async function refresh() {
   show($("app"));
   updateProfileFooter();
   updateOutboxBadge();
+  korkiNotify?.updateDocumentTitle?.({ snapshot, activeContactId, appSurface, messagesEl: $("messages") });
   renderInvitations();
   renderContacts();
   updateConnectButton();
@@ -262,7 +329,7 @@ async function setWantedContact(contactId) {
 }
 
 function contactPreview(c) {
-  return contactConnectionLabel(c.user_id);
+  return messagePreviewForContact(c.user_id);
 }
 
 function setChatOpen(open) {
@@ -273,12 +340,14 @@ function renderContacts() {
   const list = $("contact-list");
   list.innerHTML = "";
   const q = ($("search-contacts").value || "").toLowerCase();
-  for (const c of snapshot.contacts) {
+  for (const c of sortedContacts()) {
     if (q && !c.display_name.toLowerCase().includes(q) && !c.user_id.toLowerCase().includes(q)) continue;
+    const unread = unreadCount(c.user_id);
+    const previewMeta = snapshot?.chat_previews?.[c.user_id];
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "contact-item" + (c.user_id === activeContactId ? " active" : "");
+    btn.className = "contact-item" + (c.user_id === activeContactId ? " active" : "") + (unread > 0 ? " has-unread" : "");
     const avatarWrap = document.createElement("div");
     avatarWrap.className = "avatar-wrap";
     const avatar = document.createElement("div");
@@ -301,11 +370,19 @@ function renderContacts() {
     btn.appendChild(avatarWrap);
     const meta = document.createElement("div");
     meta.className = "contact-meta";
+    const timeLabel = previewMeta?.created_at ? formatTime(previewMeta.created_at) : "";
+    const badgeHtml = unread > 0
+      ? `<span class="contact-unread-badge" aria-label="${unread} непрочитанных">${unread > 99 ? "99+" : unread}</span>`
+      : "";
     meta.innerHTML = `
       <div class="contact-row-top">
         <div class="contact-name">${escapeHtml(c.display_name)}</div>
+        ${timeLabel ? `<span class="contact-time">${escapeHtml(timeLabel)}</span>` : ""}
       </div>
-      <div class="contact-preview">${escapeHtml(contactPreview(c))}</div>`;
+      <div class="contact-preview-row" style="display:flex;align-items:center;justify-content:space-between;gap:0.35rem;min-width:0">
+        <div class="contact-preview${unread > 0 ? " unread" : ""}">${escapeHtml(contactPreview(c))}</div>
+        ${badgeHtml}
+      </div>`;
     btn.appendChild(meta);
     btn.onclick = () => selectContact(c.user_id, c.display_name);
     li.appendChild(btn);
@@ -314,7 +391,10 @@ function renderContacts() {
 }
 
 async function selectContact(id, name) {
+  korkiNotify.dismissGroup(id);
   activeContactId = id;
+  hideNewMessagesPill();
+  setAppSurface("chat");
   hasMoreMessages = true;
   pendingAttachments = [];
   renderAttachPreview();
@@ -331,6 +411,7 @@ async function selectContact(id, name) {
   const wanted = setWantedContact(id);
   const loaded = loadMessages();
   await Promise.all([wanted, loaded]);
+  scrollChatToBottom(true);
   refreshChatStatus(true);
 
   if (snapshot?.firebase_configured) {
@@ -806,6 +887,7 @@ $("btn-open-profile").onclick = () => {
   $("input-profile-name").value = p.display_name;
   $("input-profile-user-id").value = p.user_id;
   previewAvatar($("profile-edit-img"), $("profile-edit-fallback"), p.display_name, p.avatar_data_url);
+  setAppSurface("profile");
   openModal("modal-profile");
 };
 
@@ -1097,7 +1179,13 @@ $("message-input").addEventListener("paste", handleComposePaste);
 $("messages").addEventListener("scroll", () => {
   const box = $("messages");
   if (box.scrollTop < 80) loadOlderMessages();
+  if (korkiNotify.isAtBottom(box)) {
+    hideNewMessagesPill();
+    if (activeContactId) markContactRead(activeContactId);
+  }
 });
+
+$("new-messages-pill")?.addEventListener("click", () => scrollChatToBottom(true));
 
 $("btn-send").onclick = sendCurrentMessage;
 $("message-input").onkeydown = (e) => {
@@ -1141,6 +1229,8 @@ async function sendCurrentMessage() {
 
 $("btn-back-contacts").onclick = () => {
   activeContactId = null;
+  hideNewMessagesPill();
+  setAppSurface("chat");
   setChatOpen(false);
   hide($("chat-view"));
   show($("empty-state"));
@@ -1150,6 +1240,7 @@ $("btn-back-contacts").onclick = () => {
 
 async function openSettingsModal() {
   closeModal("modal-profile");
+  setAppSurface("settings");
   snapshot = await invoke("get_snapshot");
   $("input-firebase-url").value = snapshot.firebase_database_url_override ?? "";
   $("input-firebase-url").placeholder = snapshot.firebase_database_url;
@@ -1181,13 +1272,23 @@ $("btn-save-settings").onclick = async () => {
     },
   });
   closeModal("modal-settings");
+  setAppSurface(activeContactId ? "chat" : "chat");
   await refresh();
 };
+
+$("modal-settings")?.addEventListener("close", () => {
+  if (!activeContactId) setAppSurface("chat");
+  else setAppSurface("chat");
+});
+$("modal-profile")?.addEventListener("close", () => setAppSurface(activeContactId ? "chat" : "chat"));
+$("modal-profile")?.addEventListener("show", () => setAppSurface("profile"));
+$("modal-settings")?.addEventListener("show", () => setAppSurface("settings"));
 
 listen("message-received", (e) => {
   handleIncomingMessage(e.payload);
 });
 listen("messages-updated", () => {
+  debouncedRefresh();
   if (!activeContactId) return;
   syncActiveChatMessages();
   refreshChatStatus(true);
@@ -1219,6 +1320,26 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeMediaViewer();
   if (e.key === "ArrowLeft") stepMediaViewer(-1);
   if (e.key === "ArrowRight") stepMediaViewer(1);
+});
+
+korkiNotify.configure({
+  stackEl: $("notification-stack"),
+  getState: () => ({
+    snapshot,
+    activeContactId,
+    appSurface,
+    messagesEl: $("messages"),
+    announceInbound: (name, preview) => {
+      const live = $("sr-live");
+      if (live) live.textContent = `Новое сообщение от ${name}: ${preview}`;
+    },
+  }),
+  onOpenChat: (id, name) => {
+    const c = snapshot?.contacts?.find((x) => x.user_id === id);
+    selectContact(id, c?.display_name || name);
+  },
+  onMarkRead: markContactRead,
+  onContactsRefresh: () => debouncedRefresh(),
 });
 
 refresh();

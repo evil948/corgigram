@@ -75,6 +75,14 @@ pub struct InvitationInfo {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct ChatPreviewInfo {
+    pub preview: String,
+    pub kind: String,
+    pub created_at: String,
+    pub direction: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub has_identity: bool,
     pub profile: Option<ProfileInfo>,
@@ -90,6 +98,10 @@ pub struct AppSnapshot {
     pub firebase_uses_default_url: bool,
     pub outbox_count: usize,
     pub contact_presence: HashMap<String, bool>,
+    #[serde(default)]
+    pub unread_by_contact: HashMap<String, usize>,
+    #[serde(default)]
+    pub chat_previews: HashMap<String, ChatPreviewInfo>,
 }
 
 #[derive(Debug, Default)]
@@ -444,6 +456,8 @@ impl CorgigramApp {
     }
 
     pub fn snapshot(&self) -> Result<AppSnapshot> {
+        let unread_by_contact = self.storage.unread_counts_all()?;
+        let chat_previews = self.build_chat_previews()?;
         Ok(AppSnapshot {
             has_identity: self.identity.is_some(),
             profile: self.profile_info(),
@@ -476,7 +490,44 @@ impl CorgigramApp {
                 .ok()
                 .map(|g| g.clone())
                 .unwrap_or_default(),
+            unread_by_contact,
+            chat_previews,
         })
+    }
+
+    pub fn mark_contact_read(&self, contact_id: &str) -> Result<()> {
+        let messages = self.storage.list_messages_page(contact_id, None, 1)?;
+        let at = messages
+            .last()
+            .map(|m| m.created_at)
+            .unwrap_or_else(Utc::now);
+        if let Some(existing) = self.storage.get_read_cursor(contact_id)? {
+            if existing >= at {
+                return Ok(());
+            }
+        }
+        self.storage.set_read_cursor(contact_id, at)?;
+        Ok(())
+    }
+
+    fn build_chat_previews(&self) -> Result<HashMap<String, ChatPreviewInfo>> {
+        let mut map = HashMap::new();
+        for preview in self.storage.latest_chat_previews()? {
+            map.insert(
+                preview.contact_id.clone(),
+                ChatPreviewInfo {
+                    preview: preview_text(
+                        &preview.preview,
+                        &preview.kind,
+                        preview.attachment_name.as_deref(),
+                    ),
+                    kind: preview.kind,
+                    created_at: preview.created_at.to_rfc3339(),
+                    direction: preview.direction,
+                },
+            );
+        }
+        Ok(map)
     }
 
     pub fn create_identity(&mut self, user_id: &str, display_name: &str) -> Result<ProfileInfo> {
@@ -2129,6 +2180,25 @@ fn glare_key(user_id: &str) -> String {
 
 fn should_initiate_offer(me: &str, contact_id: &str) -> bool {
     glare_key(me) <= glare_key(contact_id)
+}
+
+fn preview_text(body: &str, kind: &str, attachment_name: Option<&str>) -> String {
+    match kind {
+        "image" => "Фото".into(),
+        "album" => "Альбом".into(),
+        "file" => attachment_name
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("Файл · {n}"))
+            .unwrap_or_else(|| "Файл".into()),
+        _ => {
+            let t = body.trim();
+            if t.chars().count() > 80 {
+                format!("{}…", t.chars().take(80).collect::<String>())
+            } else {
+                t.to_string()
+            }
+        }
+    }
 }
 
 fn normalize_user_id(user_id: &str) -> Result<String> {

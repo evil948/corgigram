@@ -372,6 +372,181 @@ impl Storage {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
         Ok(count as usize)
     }
+
+    fn read_cursor_key(contact_id: &str) -> String {
+        format!("read_cursor:{contact_id}")
+    }
+
+    pub fn get_read_cursor(&self, contact_id: &str) -> Result<Option<DateTime<Utc>>, StorageError> {
+        Ok(self
+            .get_meta(&Self::read_cursor_key(contact_id))?
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.with_timezone(&Utc)))
+    }
+
+    pub fn set_read_cursor(&self, contact_id: &str, at: DateTime<Utc>) -> Result<(), StorageError> {
+        self.set_meta(&Self::read_cursor_key(contact_id), &at.to_rfc3339())
+    }
+
+    pub fn count_unread(&self, contact_id: &str) -> Result<usize, StorageError> {
+        let cursor = self.get_read_cursor(contact_id)?;
+        let conn = self.conn()?;
+        let count: i64 = if let Some(at) = cursor {
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE contact_id = ?1 AND direction = 'in' AND created_at > ?2",
+                params![contact_id, at.to_rfc3339()],
+                |r| r.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE contact_id = ?1 AND direction = 'in'",
+                params![contact_id],
+                |r| r.get(0),
+            )?
+        };
+        Ok(count as usize)
+    }
+
+    pub fn unread_counts_all(&self) -> Result<std::collections::HashMap<String, usize>, StorageError> {
+        let mut map = std::collections::HashMap::new();
+        for c in self.list_contacts()? {
+            map.insert(c.user_id.clone(), self.count_unread(&c.user_id)?);
+        }
+        Ok(map)
+    }
+
+    pub fn latest_chat_previews(&self) -> Result<Vec<ChatPreview>, StorageError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.contact_id, m.body, m.kind, m.created_at, m.direction, m.attachment_name
+             FROM messages m
+             INNER JOIN (
+               SELECT contact_id, MAX(created_at) AS max_at
+               FROM messages GROUP BY contact_id
+             ) latest ON m.contact_id = latest.contact_id AND m.created_at = latest.max_at",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let created_at: String = row.get(3)?;
+            Ok(ChatPreview {
+                contact_id: row.get(0)?,
+                preview: row.get(1)?,
+                kind: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "text".into()),
+                created_at: created_at.parse().unwrap_or_else(|_| Utc::now()),
+                direction: row.get(4)?,
+                attachment_name: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatPreview {
+    pub contact_id: String,
+    pub preview: String,
+    pub kind: String,
+    pub created_at: DateTime<Utc>,
+    pub direction: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use corgigram_crypto::Identity;
+
+    fn test_bundle(user_id: &str) -> corgigram_crypto::PreKeyBundle {
+        Identity::generate(user_id, user_id).prekey_bundle()
+    }
+
+    fn sample_message(id: &str, contact: &str, direction: &str, body: &str, at: DateTime<Utc>) -> MessageRecord {
+        MessageRecord {
+            id: id.into(),
+            contact_id: contact.into(),
+            direction: direction.into(),
+            body: body.into(),
+            status: "delivered".into(),
+            created_at: at,
+            kind: "text".into(),
+            attachment_name: None,
+            attachment_mime: None,
+        }
+    }
+
+    #[test]
+    fn unread_counts_inbound_after_read_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        let storage = Storage::open(&db).unwrap();
+        let t0 = Utc::now();
+        storage
+            .upsert_contact(&ContactRecord {
+                user_id: "alice".into(),
+                display_name: "Alice".into(),
+                bundle: test_bundle("alice"),
+                created_at: t0,
+                avatar_data_url: None,
+            })
+            .unwrap();
+        storage
+            .insert_message(&sample_message("m1", "alice", "in", "hi", t0))
+            .unwrap();
+        assert_eq!(storage.count_unread("alice").unwrap(), 1);
+        storage.set_read_cursor("alice", t0).unwrap();
+        assert_eq!(storage.count_unread("alice").unwrap(), 0);
+        storage
+            .insert_message(&sample_message("m2", "alice", "in", "again", t0 + Duration::seconds(1)))
+            .unwrap();
+        assert_eq!(storage.count_unread("alice").unwrap(), 1);
+    }
+
+    #[test]
+    fn outbound_messages_do_not_affect_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&dir.path().join("t.db")).unwrap();
+        let t0 = Utc::now();
+        storage
+            .upsert_contact(&ContactRecord {
+                user_id: "bob".into(),
+                display_name: "Bob".into(),
+                bundle: test_bundle("bob"),
+                created_at: t0,
+                avatar_data_url: None,
+            })
+            .unwrap();
+        storage
+            .insert_message(&sample_message("o1", "bob", "out", "sent", t0))
+            .unwrap();
+        assert_eq!(storage.count_unread("bob").unwrap(), 0);
+    }
+
+    #[test]
+    fn latest_chat_preview_returns_most_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&dir.path().join("t.db")).unwrap();
+        let t0 = Utc::now();
+        storage
+            .upsert_contact(&ContactRecord {
+                user_id: "c1".into(),
+                display_name: "C".into(),
+                bundle: test_bundle("c1"),
+                created_at: t0,
+                avatar_data_url: None,
+            })
+            .unwrap();
+        storage
+            .insert_message(&sample_message("a", "c1", "in", "first", t0))
+            .unwrap();
+        storage
+            .insert_message(&sample_message("b", "c1", "out", "second", t0 + Duration::seconds(5)))
+            .unwrap();
+        let previews = storage.latest_chat_previews().unwrap();
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].preview, "second");
+        assert_eq!(previews[0].direction, "out");
+    }
 }
 
 fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {

@@ -6,9 +6,9 @@ pub mod signaling;
 pub mod turn;
 
 pub use app::{
-    AppSnapshot, AttachmentData, BackgroundTickResult, ConnectAnswerResult, ConnectAutoResult,
-    ConnectDiagnose, ConnectOfferResult, CorgigramApp, InvitationInfo, OutgoingAttachment,
-    ProfileInfo, SharedApp,
+    AppSnapshot, AttachmentData, BackgroundTickResult, ChatPreviewInfo, ConnectAnswerResult,
+    ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, InvitationInfo,
+    OutgoingAttachment, ProfileInfo, SharedApp,
 };
 pub use config::AppConfig;
 pub use config::DEFAULT_FIREBASE_DATABASE_URL;

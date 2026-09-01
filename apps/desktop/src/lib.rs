@@ -163,6 +163,16 @@ async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String>
 }
 
 #[tauri::command]
+async fn mark_contact_read(state: State<'_, AppState>, contact_id: String) -> Result<(), String> {
+    state
+        .app
+        .read()
+        .await
+        .mark_contact_read(&contact_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_contact_avatar(state: State<'_, AppState>, contact_id: String) -> Result<Option<String>, String> {
     Ok(state
         .app
@@ -554,6 +564,7 @@ pub fn run() {
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            mark_contact_read,
             get_contact_avatar,
             create_identity,
             get_bundle_qr,

@@ -5,6 +5,9 @@ set -euo pipefail
 APPIMAGE="${1:?Usage: fix-appimage-wayland.sh path/to/AppImage}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/tauri.sh
+source "$ROOT/scripts/lib/tauri.sh"
+
 if [ ! -f "$APPIMAGE" ]; then
   echo "error: AppImage not found: $APPIMAGE" >&2
   exit 1
@@ -51,7 +54,7 @@ if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   echo "==> Re-signing updater artifacts"
   (
     cd "$ROOT/apps/desktop"
-    cargo tauri signer sign "$APPIMAGE"
+    run_tauri signer sign "$APPIMAGE"
   )
 fi
 

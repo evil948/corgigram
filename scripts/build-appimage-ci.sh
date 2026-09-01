@@ -5,17 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export NO_STRIP=1
 
-run_tauri() {
-  if command -v tauri >/dev/null 2>&1; then
-    tauri "$@"
-  elif cargo tauri --version >/dev/null 2>&1; then
-    cargo tauri "$@"
-  else
-    echo "==> Installing Tauri CLI (npm)"
-    npm install -g @tauri-apps/cli@2
-    tauri "$@"
-  fi
-}
+# shellcheck source=lib/tauri.sh
+source "$ROOT/scripts/lib/tauri.sh"
 
 cd "$ROOT/apps/desktop"
 # tauri-action invokes this script as: build-appimage-ci.sh build --target ...

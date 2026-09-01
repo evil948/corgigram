@@ -113,8 +113,7 @@ fn read_clipboard_attachments_inner() -> Result<Vec<ClipboardAttachmentDto>, Str
                 return Ok(out);
             }
         }
-        Err(arboard::Error::ContentNotAvailable) => {}
-        Err(e) => return Err(e.to_string()),
+        Err(_) => {}
         Ok(_) => {}
     }
 

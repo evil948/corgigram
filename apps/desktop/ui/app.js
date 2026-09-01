@@ -942,7 +942,7 @@ function filesFromPasteEvent(e) {
   if (!files.length && e.clipboardData?.files?.length) {
     files.push(...e.clipboardData.files);
   }
-  return files;
+  return files.filter((file) => file && file.size > 0);
 }
 
 function attachmentDtoToFile(item) {
@@ -960,7 +960,8 @@ async function readNativeClipboardFiles() {
     const items = await invoke("read_clipboard_attachments");
     if (!Array.isArray(items) || !items.length) return [];
     return items.map(attachmentDtoToFile).filter(Boolean);
-  } catch {
+  } catch (err) {
+    console.error("read_clipboard_attachments failed:", err);
     return [];
   }
 }

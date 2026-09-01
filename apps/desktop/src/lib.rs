@@ -457,8 +457,11 @@ pub fn run() {
                     else {
                         continue;
                     };
-                    for msg in messages {
-                        let _ = tick_handle.emit("message-received", &msg);
+                    for msg in &messages {
+                        let _ = tick_handle.emit("message-received", msg);
+                    }
+                    if !messages.is_empty() {
+                        let _ = tick_handle.emit("messages-updated", &messages);
                     }
                     if contacts_changed {
                         let _ = tick_handle.emit("contacts-updated", ());

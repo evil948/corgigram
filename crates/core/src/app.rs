@@ -183,10 +183,21 @@ impl CorgigramApp {
     }
 
     async fn set_active_chat(&self, chat: ActiveChat) {
+        let contact_id = chat.contact_id.clone();
         if let Ok(mut id) = self.live_contact_id.write() {
-            *id = Some(chat.contact_id.clone());
+            *id = Some(contact_id.clone());
         }
         *self.active.lock().await = Some(chat);
+        let _ = self.mark_mailbox_queued_as_sent(&contact_id);
+    }
+
+    fn mark_mailbox_queued_as_sent(&self, contact_id: &str) -> Result<()> {
+        for msg in self.storage.list_messages(contact_id)? {
+            if msg.direction == "out" && msg.status == "queued_mailbox" {
+                self.storage.update_message_status(&msg.id, "sent")?;
+            }
+        }
+        Ok(())
     }
 
     fn connecting_contact_id(&self) -> Option<String> {
@@ -214,6 +225,9 @@ impl CorgigramApp {
 
     /// UI: open chat — background poll will start/complete WebRTC for this contact.
     pub async fn set_wanted_contact(&self, contact_id: Option<String>) {
+        if let Some(id) = contact_id.as_ref() {
+            self.connect_backoff.lock().await.remove(id);
+        }
         if let Ok(mut wanted) = self.wanted_contact_id.write() {
             *wanted = contact_id.clone();
         }
@@ -398,11 +412,6 @@ impl CorgigramApp {
         }
         if let Ok(mut stored) = self.contact_presence.write() {
             *stored = cache.clone();
-        }
-        if let Some(active_id) = self.live_contact_id.read().ok().and_then(|g| g.clone()) {
-            if cache.get(&active_id) == Some(&false) {
-                self.disconnect_active().await;
-            }
         }
         Ok(())
     }
@@ -964,7 +973,9 @@ impl CorgigramApp {
                 if p.contact_id == contact_id {
                     return Ok(());
                 }
-                *pending = None;
+                if let Some(mut old) = pending.take() {
+                    old.peer.close().await;
+                }
             }
         }
         {
@@ -1503,12 +1514,12 @@ impl CorgigramApp {
             fb.publish_mailbox_ping(contact_id, &me, &record.id)
                 .await
                 .ok();
-            let sent = MessageRecord {
-                status: "sent".into(),
+            let queued = MessageRecord {
+                status: "queued_mailbox".into(),
                 ..record.clone()
             };
-            self.storage.upsert_message(&sent)?;
-            return Ok(sent);
+            self.storage.upsert_message(&queued)?;
+            return Ok(queued);
         }
 
         self.storage.insert_outbox(&OutboxRecord {

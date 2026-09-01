@@ -103,6 +103,28 @@ function updateProfileFooter() {
   setAvatarEl($("profile-avatar"), profile.display_name, profile.avatar_data_url);
 }
 
+function msgContactId(m) {
+  return m?.contact_id ?? m?.contactId ?? "";
+}
+
+function isPendingStatus(status) {
+  return status === "pending" || status === "queued_local" || status === "queued_mailbox";
+}
+
+function updateComposePlaceholder() {
+  const input = $("message-input");
+  if (!input) return;
+  input.placeholder = pendingAttachments.length
+    ? "Подпись к файлу (необязательно)…"
+    : "Напишите сообщение…";
+}
+
+function handleIncomingMessage(msg) {
+  if (msgContactId(msg) !== activeContactId) return;
+  appendMessage(msg);
+  refreshChatStatus(true);
+}
+
 function debouncedRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => refresh(), 180);
@@ -404,7 +426,7 @@ async function syncActiveChatMessages() {
 function updateMessageStatus(msgId, status) {
   const row = $("messages").querySelector(`.msg-row[data-msg-id="${msgId}"]`);
   if (!row) return;
-  const pending = status === "pending" || status === "queued_local";
+  const pending = isPendingStatus(status);
   const timeEl = row.querySelector(".msg-time");
   if (!timeEl) return;
   const base = timeEl.textContent.split(" · ")[0];
@@ -500,7 +522,7 @@ function appendMessage(m, scroll = true, prepend = false) {
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
   row.dataset.msgId = m.id;
   row.dataset.createdAt = m.created_at;
-  const pending = m.status === "pending" || m.status === "queued_local";
+  const pending = isPendingStatus(m.status);
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   const caption = (m.kind && m.kind !== "text") ? m.body : escapeHtml(m.body);
@@ -727,10 +749,12 @@ function renderAttachPreview() {
   if (!pendingAttachments.length) {
     hide(panel);
     panel.innerHTML = "";
+    updateComposePlaceholder();
     return;
   }
   show(panel);
   panel.innerHTML = "";
+  updateComposePlaceholder();
   pendingAttachments.forEach((item, index) => {
     const chip = document.createElement("div");
     chip.className = "attach-chip";
@@ -859,16 +883,22 @@ $("btn-save-settings").onclick = async () => {
 };
 
 listen("message-received", (e) => {
-  if (e.payload.contact_id === activeContactId) appendMessage(e.payload);
+  handleIncomingMessage(e.payload);
 });
-listen("message-sent", async () => {
-  await refresh();
-  await syncActiveChatMessages();
+listen("messages-updated", () => {
+  if (!activeContactId) return;
+  syncActiveChatMessages();
+  refreshChatStatus(true);
+});
+listen("message-sent", (e) => {
+  const msg = e.payload;
+  if (msg) updateMessageStatus(msg.id, msg.status);
+  debouncedRefresh();
 });
 listen("contacts-updated", async () => {
   debouncedRefresh();
   if (activeContactId) {
-    await refreshChatStatus();
+    await refreshChatStatus(true);
     await syncActiveChatMessages();
   }
 });

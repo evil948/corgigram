@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify version sync
+        shell: bash
         run: |
           CARGO_VER=$(grep '^version' Cargo.toml | head -1 | awk '{print $3}' | tr -d '"')
           TAURI_VER=$(jq -r .version apps/desktop/tauri.conf.json)

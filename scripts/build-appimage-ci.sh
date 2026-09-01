@@ -5,14 +5,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export NO_STRIP=1
 
-if ! cargo tauri --version >/dev/null 2>&1; then
-  echo "==> Installing Tauri CLI (npm)"
-  npm install -g @tauri-apps/cli@2
-fi
+run_tauri() {
+  if command -v tauri >/dev/null 2>&1; then
+    tauri "$@"
+  elif cargo tauri --version >/dev/null 2>&1; then
+    cargo tauri "$@"
+  else
+    echo "==> Installing Tauri CLI (npm)"
+    npm install -g @tauri-apps/cli@2
+    tauri "$@"
+  fi
+}
 
 cd "$ROOT/apps/desktop"
 # tauri-action invokes this script as: build-appimage-ci.sh build --target ...
-cargo tauri "$@"
+run_tauri "$@"
 
 APPIMAGE="$(ls -1 "$ROOT"/target/*/release/bundle/appimage/*.AppImage | head -1)"
 "$ROOT/scripts/fix-appimage-wayland.sh" "$APPIMAGE"

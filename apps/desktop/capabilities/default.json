@@ -9,6 +9,7 @@
     "updater:default",
     "dialog:default",
     "process:allow-restart",
+    "notification:default",
     "default"
   ]
 }

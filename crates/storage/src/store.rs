@@ -373,6 +373,18 @@ impl Storage {
         Ok(count as usize)
     }
 
+    pub fn max_message_at(&self, contact_id: &str) -> Result<Option<DateTime<Utc>>, StorageError> {
+        let conn = self.conn()?;
+        let at: Option<String> = conn
+            .query_row(
+                "SELECT MAX(created_at) FROM messages WHERE contact_id = ?1",
+                params![contact_id],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(at.and_then(|s| s.parse().ok()))
+    }
+
     fn read_cursor_key(contact_id: &str) -> String {
         format!("read_cursor:{contact_id}")
     }

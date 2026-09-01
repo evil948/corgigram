@@ -496,16 +496,10 @@ impl CorgigramApp {
     }
 
     pub fn mark_contact_read(&self, contact_id: &str) -> Result<()> {
-        let messages = self.storage.list_messages_page(contact_id, None, 1)?;
-        let at = messages
-            .last()
-            .map(|m| m.created_at)
+        let at = self
+            .storage
+            .max_message_at(contact_id)?
             .unwrap_or_else(Utc::now);
-        if let Some(existing) = self.storage.get_read_cursor(contact_id)? {
-            if existing >= at {
-                return Ok(());
-            }
-        }
         self.storage.set_read_cursor(contact_id, at)?;
         Ok(())
     }

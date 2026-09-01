@@ -147,12 +147,17 @@ function setAppSurface(surface) {
   appSurface = surface;
 }
 
-function markContactRead(contactId) {
+async function markContactRead(contactId) {
   if (!contactId) return;
-  invoke("mark_contact_read", { contactId }).catch(() => {});
+  try {
+    await invoke("mark_contact_read", { contactId });
+  } catch (err) {
+    console.warn("mark_contact_read failed:", err);
+  }
   if (snapshot?.unread_by_contact) {
     snapshot.unread_by_contact[contactId] = 0;
   }
+  renderContacts();
   korkiNotify?.updateDocumentTitle?.({ snapshot, activeContactId, appSurface, messagesEl: $("messages") });
 }
 
@@ -187,12 +192,12 @@ function hideNewMessagesPill() {
   if (pill) hide(pill);
 }
 
-function scrollChatToBottom(markRead = true) {
+async function scrollChatToBottom(markRead = true) {
   const box = $("messages");
   if (!box) return;
   box.scrollTop = box.scrollHeight;
   hideNewMessagesPill();
-  if (markRead && activeContactId) markContactRead(activeContactId);
+  if (markRead && activeContactId) await markContactRead(activeContactId);
 }
 
 function handleIncomingMessage(msg) {
@@ -411,8 +416,8 @@ async function selectContact(id, name) {
   const wanted = setWantedContact(id);
   const loaded = loadMessages();
   await Promise.all([wanted, loaded]);
-  scrollChatToBottom(true);
-  refreshChatStatus(true);
+  await scrollChatToBottom(true);
+  await refreshChatStatus(false);
 
   if (snapshot?.firebase_configured) {
     invoke("sync_mailbox", { contactId: id })
@@ -1181,11 +1186,11 @@ $("messages").addEventListener("scroll", () => {
   if (box.scrollTop < 80) loadOlderMessages();
   if (korkiNotify.isAtBottom(box)) {
     hideNewMessagesPill();
-    if (activeContactId) markContactRead(activeContactId);
+    if (activeContactId) void markContactRead(activeContactId);
   }
 });
 
-$("new-messages-pill")?.addEventListener("click", () => scrollChatToBottom(true));
+$("new-messages-pill")?.addEventListener("click", () => { void scrollChatToBottom(true); });
 
 $("btn-send").onclick = sendCurrentMessage;
 $("message-input").onkeydown = (e) => {

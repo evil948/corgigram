@@ -139,6 +139,8 @@
   }
 
   function maybeOsNotify(contactId, displayName, msg, count) {
+    // Native notifications when unfocused are handled by the Tauri backend.
+    if (global.__TAURI__?.core) return;
     if (!global.Notification || Notification.permission !== "granted") return;
     if (windowFocused && documentVisible) return;
     const title = count > 1 ? `${displayName} (${count})` : displayName;

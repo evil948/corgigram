@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-contact-read"
+description = "Enables the mark_contact_read command without any pre-configured scope."
+commands.allow = ["mark_contact_read"]
+
+[[permission]]
+identifier = "deny-mark-contact-read"
+description = "Denies the mark_contact_read command without any pre-configured scope."
+commands.deny = ["mark_contact_read"]

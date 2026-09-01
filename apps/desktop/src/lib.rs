@@ -12,6 +12,7 @@ use corgigram_core::{
 use corgigram_storage::{ContactRecord, MessageRecord};
 use serde::Deserialize;
 use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 struct AppState {
     app: SharedApp,
@@ -550,6 +551,62 @@ async fn check_for_updates_manual(app: tauri::AppHandle) -> Result<String, Strin
     }
 }
 
+fn inbound_preview(msg: &MessageRecord) -> String {
+    match msg.kind.as_str() {
+        "image" => "Фото".into(),
+        "album" => "Альбом".into(),
+        "file" => msg
+            .attachment_name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("Файл · {n}"))
+            .unwrap_or_else(|| "Файл".into()),
+        _ => {
+            let t = msg.body.trim();
+            if t.chars().count() > 80 {
+                format!("{}…", t.chars().take(80).collect::<String>())
+            } else {
+                t.to_string()
+            }
+        }
+    }
+}
+
+async fn maybe_native_notify(app: &tauri::AppHandle, shared: &SharedApp, msg: &MessageRecord) {
+    if msg.direction != "in" {
+        return;
+    }
+    let focused = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    let snapshot = match shared.read().await.snapshot() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let in_active_chat = focused
+        && snapshot
+            .wanted_contact_id
+            .as_deref()
+            == Some(msg.contact_id.as_str());
+    if in_active_chat {
+        return;
+    }
+    let title = snapshot
+        .contacts
+        .iter()
+        .find(|c| c.user_id == msg.contact_id)
+        .map(|c| c.display_name.as_str())
+        .unwrap_or(&msg.contact_id);
+    let body = inbound_preview(msg);
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(&body)
+        .show();
+}
+
 pub fn run() {
     let corgigram = CorgigramApp::open_default().expect("failed to open app data");
     let shared: SharedApp = Arc::new(tokio::sync::RwLock::new(corgigram));
@@ -560,6 +617,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
@@ -647,6 +705,7 @@ pub fn run() {
                     sleep_ms = if connecting { 50 } else { 200 };
                     for msg in &messages {
                         let _ = tick_handle.emit("message-received", msg);
+                        maybe_native_notify(&tick_handle, &tick_app, msg).await;
                     }
                     if !messages.is_empty() {
                         let _ = tick_handle.emit("messages-updated", &messages);

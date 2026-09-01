@@ -159,6 +159,10 @@ impl PeerConnection {
         }
         Err(anyhow!("timed out waiting for data channel"))
     }
+
+    pub async fn close(self) {
+        let _ = self.pc.close().await;
+    }
 }
 
 pub async fn create_offer(ice: &IceConfig) -> Result<String> {

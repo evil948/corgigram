@@ -17,6 +17,7 @@ tauri-build.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 corgigram-core = { path = "../../crates/core" }
 corgigram-storage = { path = "../../crates/storage" }
 serde.workspace = true

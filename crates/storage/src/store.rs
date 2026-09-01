@@ -36,6 +36,17 @@ pub struct MessageRecord {
     pub body: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    /// text | image | file | album
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_mime: Option<String>,
+}
+
+fn default_kind() -> String {
+    "text".into()
 }
 
 pub struct Storage {
@@ -68,6 +79,9 @@ impl Storage {
                 body TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'text',
+                attachment_name TEXT,
+                attachment_mime TEXT,
                 FOREIGN KEY(contact_id) REFERENCES contacts(user_id)
             );
             CREATE TABLE IF NOT EXISTS outbox (
@@ -80,6 +94,12 @@ impl Storage {
             );
             ",
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachment_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachment_mime TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -174,8 +194,8 @@ impl Storage {
     pub fn insert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages(id, contact_id, direction, body, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 message.id,
                 message.contact_id,
@@ -183,6 +203,9 @@ impl Storage {
                 message.body,
                 message.status,
                 message.created_at.to_rfc3339(),
+                message.kind,
+                message.attachment_name,
+                message.attachment_mime,
             ],
         )?;
         Ok(())
@@ -191,11 +214,14 @@ impl Storage {
     pub fn upsert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages(id, contact_id, direction, body, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                body = excluded.body,
-               status = excluded.status",
+               status = excluded.status,
+               kind = excluded.kind,
+               attachment_name = excluded.attachment_name,
+               attachment_mime = excluded.attachment_mime",
             params![
                 message.id,
                 message.contact_id,
@@ -203,6 +229,9 @@ impl Storage {
                 message.body,
                 message.status,
                 message.created_at.to_rfc3339(),
+                message.kind,
+                message.attachment_name,
+                message.attachment_mime,
             ],
         )?;
         Ok(())
@@ -218,23 +247,37 @@ impl Storage {
     }
 
     pub fn list_messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>, StorageError> {
+        self.list_messages_page(contact_id, None, 10_000)
+    }
+
+    pub fn list_messages_page(
+        &self,
+        contact_id: &str,
+        before_created_at: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, contact_id, direction, body, status, created_at
-             FROM messages WHERE contact_id = ?1 ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map(params![contact_id], |row| {
-            let created_at: String = row.get(5)?;
-            Ok(MessageRecord {
-                id: row.get(0)?,
-                contact_id: row.get(1)?,
-                direction: row.get(2)?,
-                body: row.get(3)?,
-                status: row.get(4)?,
-                created_at: created_at.parse().unwrap_or_else(|_| Utc::now()),
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+        let limit = limit.min(500) as i64;
+        let rows = if let Some(before) = before_created_at {
+            let mut stmt = conn.prepare(
+                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
+                 FROM messages WHERE contact_id = ?1 AND created_at < ?2
+                 ORDER BY created_at DESC LIMIT ?3",
+            )?;
+            let mapped = stmt.query_map(params![contact_id, before, limit], map_message_row)?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
+                 FROM messages WHERE contact_id = ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let mapped = stmt.query_map(params![contact_id, limit], map_message_row)?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut out = rows;
+        out.reverse();
+        Ok(out)
     }
 
     pub fn new_message_id() -> String {
@@ -298,4 +341,19 @@ impl Storage {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
         Ok(count as usize)
     }
+}
+
+fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
+    let created_at: String = row.get(5)?;
+    Ok(MessageRecord {
+        id: row.get(0)?,
+        contact_id: row.get(1)?,
+        direction: row.get(2)?,
+        body: row.get(3)?,
+        status: row.get(4)?,
+        created_at: created_at.parse().unwrap_or_else(|_| Utc::now()),
+        kind: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "text".into()),
+        attachment_name: row.get(7)?,
+        attachment_mime: row.get(8)?,
+    })
 }

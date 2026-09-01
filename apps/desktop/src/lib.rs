@@ -2,17 +2,39 @@ mod updater;
 
 use std::sync::Arc;
 
-use corgigram_core::{AppConfig, AppSnapshot, ConnectAnswerResult, ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, ProfileInfo, SharedApp};
+use base64::Engine;
+use corgigram_core::{
+    AppConfig, AppSnapshot, AttachmentData, BackgroundTickResult, ConnectAnswerResult,
+    ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, OutgoingAttachment,
+    ProfileInfo, SharedApp,
+};
 use corgigram_storage::{ContactRecord, MessageRecord};
+use serde::Deserialize;
 use tauri::{Emitter, State};
 
 struct AppState {
     app: SharedApp,
 }
 
+#[derive(Debug, Deserialize)]
+struct AttachmentInput {
+    name: String,
+    mime: String,
+    data_base64: String,
+}
+
 #[tauri::command]
 async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     state.app.read().await.snapshot().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_contact_avatar(state: State<'_, AppState>, contact_id: String) -> Result<Option<String>, String> {
+    Ok(state
+        .app
+        .read()
+        .await
+        .get_contact_avatar(&contact_id))
 }
 
 #[tauri::command]
@@ -122,6 +144,39 @@ async fn get_messages(state: State<'_, AppState>, contact_id: String) -> Result<
         .read()
         .await
         .messages(&contact_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_messages_page(
+    state: State<'_, AppState>,
+    contact_id: String,
+    before_created_at: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<MessageRecord>, String> {
+    state
+        .app
+        .read()
+        .await
+        .messages_page(
+            &contact_id,
+            before_created_at.as_deref(),
+            limit.unwrap_or(50),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn read_attachment(
+    state: State<'_, AppState>,
+    message_id: String,
+    index: usize,
+) -> Result<AttachmentData, String> {
+    state
+        .app
+        .read()
+        .await
+        .read_attachment(&message_id, index)
         .map_err(|e| e.to_string())
 }
 
@@ -242,6 +297,38 @@ async fn send_message(
 }
 
 #[tauri::command]
+async fn send_attachments(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    contact_id: String,
+    attachments: Vec<AttachmentInput>,
+    caption: Option<String>,
+) -> Result<MessageRecord, String> {
+    let parsed = attachments
+        .into_iter()
+        .map(|item| {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&item.data_base64)
+                .map_err(|e| e.to_string())?;
+            Ok(OutgoingAttachment {
+                name: item.name,
+                mime: item.mime,
+                data,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let record = state
+        .app
+        .read()
+        .await
+        .send_attachments(&contact_id, parsed, caption.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("message-sent", &record);
+    Ok(record)
+}
+
+#[tauri::command]
 async fn poll_messages(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<MessageRecord>, String> {
     let incoming = state
         .app
@@ -306,6 +393,7 @@ pub fn run() {
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_contact_avatar,
             create_identity,
             get_bundle_qr,
             add_contact,
@@ -315,6 +403,8 @@ pub fn run() {
             sync_directory,
             sync_avatars,
             get_messages,
+            get_messages_page,
+            read_attachment,
             get_safety_number,
             set_wanted_contact,
             connect_offer,
@@ -324,6 +414,7 @@ pub fn run() {
             connect_answer,
             sync_mailbox,
             send_message,
+            send_attachments,
             poll_messages,
             save_config,
             update_profile,
@@ -350,56 +441,33 @@ pub fn run() {
                 let _ = app.sync_avatar_downloads().await;
                 app.prefetch_turn().await;
             });
-            let avatar_poll = poll_app.clone();
-            let avatar_handle = app.handle().clone();
+
+            let tick_app = poll_app.clone();
+            let tick_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                    let app = avatar_poll.read().await;
-                    let _ = app.sync_avatars().await;
-                    let _ = avatar_handle.emit("contacts-updated", ());
-                }
-            });
-            let poll_handle = app.handle().clone();
-            let mailbox_poll = poll_app.clone();
-            tauri::async_runtime::spawn(async move {
+                let mut avatar_counter = 0u32;
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let incoming = mailbox_poll
-                        .read()
-                        .await
-                        .sync_all_mailboxes()
-                        .await
-                        .unwrap_or_default();
-                    for msg in &incoming {
-                        let _ = poll_handle.emit("message-received", msg);
+                    avatar_counter = avatar_counter.wrapping_add(1);
+                    let tick = tick_app.read().await.background_tick().await;
+                    let Ok(BackgroundTickResult {
+                        messages,
+                        contacts_changed,
+                    }) = tick
+                    else {
+                        continue;
+                    };
+                    for msg in messages {
+                        let _ = tick_handle.emit("message-received", &msg);
                     }
-                    if !incoming.is_empty() {
-                        let _ = poll_handle.emit("contacts-updated", ());
+                    if contacts_changed {
+                        let _ = tick_handle.emit("contacts-updated", ());
                     }
-                }
-            });
-            let connect_poll = poll_app.clone();
-            let connect_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let app = connect_poll.read().await;
-                    let _ = app.sync_invitations().await;
-                    let _ = app.poll_connectivity().await;
-                    let live = app.recv_live_messages().await.unwrap_or_default();
-                    for msg in &live {
-                        let _ = connect_handle.emit("message-received", msg);
+                    if avatar_counter % 60 == 0 {
+                        let app = tick_app.read().await;
+                        let _ = app.sync_avatars().await;
+                        let _ = tick_handle.emit("contacts-updated", ());
                     }
-                    let _ = connect_handle.emit("contacts-updated", ());
-                }
-            });
-            let ice_poll = poll_app.clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    let app = ice_poll.read().await;
-                    let _ = app.exchange_pending_ice().await;
                 }
             });
             Ok(())

@@ -28,6 +28,16 @@ pub struct MessageDto {
     pub body: String,
     pub status: String,
     pub created_at: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_mime: Option<String>,
+}
+
+fn default_kind() -> String {
+    "text".into()
 }
 
 #[frb(non_final)]
@@ -99,6 +109,9 @@ impl From<MessageRecord> for MessageDto {
             body: m.body,
             status: m.status,
             created_at: m.created_at.to_rfc3339(),
+            kind: m.kind,
+            attachment_name: m.attachment_name,
+            attachment_mime: m.attachment_mime,
         }
     }
 }

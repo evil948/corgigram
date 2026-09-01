@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -10,15 +11,18 @@ use corgigram_crypto::{
     decrypt_avatar, decrypt_mailbox, encrypt_avatar, encrypt_mailbox, Identity, PreKeyBundle,
     Session, SessionInitiator, SessionResponder,
 };
-use corgigram_protocol::WireMessage;
+use corgigram_protocol::{ChatPayload, WireMessage};
 use corgigram_storage::{ContactRecord, MessageRecord, OutboxRecord, Storage};
 use corgigram_transport::{run_answerer_role, run_offerer_role, IceConfig, PeerConnection};
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
+use crate::chat_media::{
+    self, bytes_to_payload, message_record_from_payload, payload_to_bytes, save_payload_attachments,
+};
 use crate::config::AppConfig;
-use crate::signaling::FirebaseSignaling;
+use crate::signaling::{FirebaseSignaling, MailboxEntry};
 use crate::turn::fetch_elixir_webrtc_turn;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,6 +89,14 @@ pub struct AppSnapshot {
     pub contact_presence: HashMap<String, bool>,
 }
 
+#[derive(Debug, Default)]
+pub struct BackgroundTickResult {
+    pub messages: Vec<MessageRecord>,
+    pub contacts_changed: bool,
+}
+
+pub use chat_media::{AttachmentData, OutgoingAttachment};
+
 struct PendingOffer {
     contact_id: String,
     peer: PeerConnection,
@@ -110,15 +122,18 @@ pub struct CorgigramApp {
     config: AppConfig,
     storage: Storage,
     identity: Option<Identity>,
-    active: Arc<Mutex<Option<ActiveChat>>>,
+    active: Arc<AsyncMutex<Option<ActiveChat>>>,
     /// Updated alongside `active` so snapshot works while poll holds the async lock.
     live_contact_id: Arc<RwLock<Option<String>>>,
     wanted_contact_id: Arc<RwLock<Option<String>>>,
-    pending_offer: Arc<Mutex<Option<PendingOffer>>>,
-    pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
+    pending_offer: Arc<AsyncMutex<Option<PendingOffer>>>,
+    pending_answer: Arc<AsyncMutex<Option<PendingAnswer>>>,
     pending_invitations: Arc<RwLock<Vec<InvitationInfo>>>,
     contact_presence: Arc<RwLock<HashMap<String, bool>>>,
-    last_presence_heartbeat: Arc<Mutex<Option<DateTime<Utc>>>>,
+    last_presence_heartbeat: Arc<AsyncMutex<Option<DateTime<Utc>>>>,
+    last_presence_sync: Arc<AsyncMutex<Option<DateTime<Utc>>>>,
+    firebase_client: Arc<Mutex<Option<FirebaseSignaling>>>,
+    connect_backoff: Arc<AsyncMutex<HashMap<String, DateTime<Utc>>>>,
 }
 
 impl CorgigramApp {
@@ -139,14 +154,17 @@ impl CorgigramApp {
             config,
             storage,
             identity: None,
-            active: Arc::new(Mutex::new(None)),
+            active: Arc::new(AsyncMutex::new(None)),
             live_contact_id: Arc::new(RwLock::new(None)),
             wanted_contact_id: Arc::new(RwLock::new(None)),
-            pending_offer: Arc::new(Mutex::new(None)),
-            pending_answer: Arc::new(Mutex::new(None)),
+            pending_offer: Arc::new(AsyncMutex::new(None)),
+            pending_answer: Arc::new(AsyncMutex::new(None)),
             pending_invitations: Arc::new(RwLock::new(Vec::new())),
             contact_presence: Arc::new(RwLock::new(HashMap::new())),
-            last_presence_heartbeat: Arc::new(Mutex::new(None)),
+            last_presence_heartbeat: Arc::new(AsyncMutex::new(None)),
+            last_presence_sync: Arc::new(AsyncMutex::new(None)),
+            firebase_client: Arc::new(Mutex::new(None)),
+            connect_backoff: Arc::new(AsyncMutex::new(HashMap::new())),
         };
         app.load_identity()?;
         app.reconcile_stale_outbox()?;
@@ -247,7 +265,25 @@ impl CorgigramApp {
         if let Ok(mut id) = self.live_contact_id.write() {
             *id = None;
         }
-        *self.active.lock().await = None;
+        let mut guard = self.active.lock().await;
+        if let Some(chat) = guard.take() {
+            chat.peer.close().await;
+        }
+    }
+
+    async fn set_connect_backoff(&self, contact_id: &str, secs: i64) {
+        let mut map = self.connect_backoff.lock().await;
+        map.insert(
+            contact_id.to_string(),
+            Utc::now() + chrono::Duration::seconds(secs),
+        );
+    }
+
+    async fn is_in_connect_backoff(&self, contact_id: &str) -> bool {
+        let map = self.connect_backoff.lock().await;
+        map.get(contact_id)
+            .map(|until| Utc::now() < *until)
+            .unwrap_or(false)
     }
 
     /// App startup: mark online and ping contacts to nudge WebRTC connect.
@@ -295,8 +331,12 @@ impl CorgigramApp {
             }
         }
         self.disconnect_active().await;
-        *self.pending_offer.lock().await = None;
-        *self.pending_answer.lock().await = None;
+        if let Some(mut offer) = self.pending_offer.lock().await.take() {
+            offer.peer.close().await;
+        }
+        if let Some(mut answer) = self.pending_answer.lock().await.take() {
+            answer.peer.close().await;
+        }
         Ok(())
     }
 
@@ -331,6 +371,18 @@ impl CorgigramApp {
         Ok(())
     }
 
+    async fn maybe_sync_contact_presence(&self) {
+        let mut last = self.last_presence_sync.lock().await;
+        let now = Utc::now();
+        let due = last
+            .map(|t| (now - t).num_seconds() >= 3)
+            .unwrap_or(true);
+        if due {
+            let _ = self.sync_contact_presence().await;
+            *last = Some(now);
+        }
+    }
+
     async fn sync_contact_presence(&self) -> Result<()> {
         if !self.config.firebase_configured() {
             return Ok(());
@@ -359,6 +411,9 @@ impl CorgigramApp {
         let config = config.with_normalized_firebase_url();
         config.save(&self.data_dir.join("config.json"))?;
         self.config = config;
+        if let Ok(mut fb) = self.firebase_client.lock() {
+            *fb = None;
+        }
         Ok(())
     }
 
@@ -366,7 +421,7 @@ impl CorgigramApp {
         Ok(AppSnapshot {
             has_identity: self.identity.is_some(),
             profile: self.profile_info(),
-            contacts: self.contacts_with_avatars()?,
+            contacts: self.storage.list_contacts()?,
             pending_invitations: self
                 .pending_invitations
                 .read()
@@ -693,6 +748,72 @@ impl CorgigramApp {
         Ok(self.storage.list_messages(contact_id)?)
     }
 
+    pub fn messages_page(
+        &self,
+        contact_id: &str,
+        before_created_at: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MessageRecord>> {
+        Ok(self
+            .storage
+            .list_messages_page(contact_id, before_created_at, limit)?)
+    }
+
+    pub fn get_contact_avatar(&self, contact_id: &str) -> Option<String> {
+        self.load_contact_avatar_data_url(contact_id)
+    }
+
+    pub fn read_attachment(&self, message_id: &str, index: usize) -> Result<AttachmentData> {
+        chat_media::read_attachment_bytes(&self.data_dir, message_id, index)
+    }
+
+    pub fn attachment_count(&self, message_id: &str) -> usize {
+        chat_media::attachment_count(&self.data_dir, message_id)
+    }
+
+    fn contacts_fingerprint(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(contacts) = self.storage.list_contacts() {
+            for contact in contacts {
+                contact.user_id.hash(&mut hasher);
+            }
+        }
+        if let Ok(presence) = self.contact_presence.read() {
+            for (user_id, online) in presence.iter() {
+                user_id.hash(&mut hasher);
+                online.hash(&mut hasher);
+            }
+        }
+        if let Ok(live) = self.live_contact_id.read() {
+            live.hash(&mut hasher);
+        }
+        self.connecting_contact_id().hash(&mut hasher);
+        if let Ok(count) = self.storage.outbox_count() {
+            count.hash(&mut hasher);
+        }
+        if let Ok(invitations) = self.pending_invitations.read() {
+            invitations.len().hash(&mut hasher);
+            for invitation in invitations.iter() {
+                invitation.from_user_id.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    pub async fn background_tick(&self) -> Result<BackgroundTickResult> {
+        let fingerprint_before = self.contacts_fingerprint();
+        let mut messages = self.sync_all_mailboxes().await.unwrap_or_default();
+        let _ = self.sync_invitations().await;
+        let _ = self.poll_connectivity().await;
+        messages.extend(self.recv_live_messages().await.unwrap_or_default());
+        let _ = self.exchange_pending_ice().await;
+        let fingerprint_after = self.contacts_fingerprint();
+        Ok(BackgroundTickResult {
+            contacts_changed: fingerprint_before != fingerprint_after || !messages.is_empty(),
+            messages,
+        })
+    }
+
     async fn build_ice_config(&self) -> IceConfig {
         if !self.config.firebase_configured() {
             return IceConfig::localhost();
@@ -723,10 +844,20 @@ impl CorgigramApp {
     }
 
     fn firebase(&self) -> Result<FirebaseSignaling> {
-        Ok(FirebaseSignaling::new(
-            &self.config.effective_firebase_database_url(),
-            self.config.firebase_auth_token.clone(),
-        ))
+        if !self.config.firebase_configured() {
+            anyhow::bail!("firebase not configured");
+        }
+        let mut guard = self
+            .firebase_client
+            .lock()
+            .map_err(|_| anyhow::anyhow!("firebase client lock poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(FirebaseSignaling::new(
+                &self.config.effective_firebase_database_url(),
+                self.config.firebase_auth_token.clone(),
+            ));
+        }
+        guard.clone().context("firebase client missing")
     }
 
     fn my_user_id(&self) -> Result<String> {
@@ -891,6 +1022,9 @@ impl CorgigramApp {
         let Some(contact_id) = wanted else {
             return Ok(());
         };
+        if self.is_in_connect_backoff(&contact_id).await {
+            return Ok(());
+        }
         if self
             .live_contact_id
             .read()
@@ -1148,11 +1282,12 @@ impl CorgigramApp {
             let id = uuid::Uuid::new_v4().to_string();
             let _ = fb.publish_ice_candidate(peer_id, me, &id, &candidate).await;
         }
-        // End-of-candidates marker for trickle ICE completion.
-        let eoc = serde_json::json!({"candidate":""}).to_string();
-        let _ = fb
-            .publish_ice_candidate(peer_id, me, "__eoc__", &eoc)
-            .await;
+        if seen.insert("__eoc_sent__".to_string()) {
+            let eoc = serde_json::json!({"candidate":""}).to_string();
+            let _ = fb
+                .publish_ice_candidate(peer_id, me, "__eoc__", &eoc)
+                .await;
+        }
         if let Ok(candidates) = fb.list_ice_candidates(me, peer_id).await {
             for (id, candidate) in candidates {
                 if id == "__eoc__" {
@@ -1196,21 +1331,31 @@ impl CorgigramApp {
 
         {
             let mut pending = self.pending_answer.lock().await;
-            if let Some(ref answer) = *pending {
+            if let Some(answer) = pending.as_ref() {
                 if now.signed_duration_since(answer.started_at) > answer_stale
                     && !answer.peer.is_connected()
                 {
-                    *pending = None;
+                    let contact_id = answer.contact_id.clone();
+                    if let Some(mut answer) = pending.take() {
+                        answer.peer.close().await;
+                        drop(pending);
+                        self.set_connect_backoff(&contact_id, 8).await;
+                    }
                 }
             }
         }
         {
             let mut pending = self.pending_offer.lock().await;
-            if let Some(ref offer) = *pending {
+            if let Some(offer) = pending.as_ref() {
                 if now.signed_duration_since(offer.started_at) > offer_stale
                     && !offer.peer.is_connected()
                 {
-                    *pending = None;
+                    let contact_id = offer.contact_id.clone();
+                    if let Some(mut offer) = pending.take() {
+                        offer.peer.close().await;
+                        drop(pending);
+                        self.set_connect_backoff(&contact_id, 8).await;
+                    }
                 }
             }
         }
@@ -1256,27 +1401,49 @@ impl CorgigramApp {
     }
 
     pub async fn send_message(&self, contact_id: &str, text: &str) -> Result<MessageRecord> {
-        let record = MessageRecord {
-            id: Storage::new_message_id(),
-            contact_id: contact_id.to_string(),
-            direction: "out".into(),
+        let payload = ChatPayload::Text {
             body: text.to_string(),
-            status: "pending".into(),
-            created_at: Utc::now(),
         };
+        self.send_payload(contact_id, &payload).await
+    }
 
-        if let Some(sent) = self.try_send_live(contact_id, text, &record.id).await? {
+    pub async fn send_attachments(
+        &self,
+        contact_id: &str,
+        attachments: Vec<OutgoingAttachment>,
+        caption: Option<&str>,
+    ) -> Result<MessageRecord> {
+        let payload = chat_media::build_payload(caption, &attachments)?;
+        self.send_payload(contact_id, &payload).await
+    }
+
+    async fn send_payload(
+        &self,
+        contact_id: &str,
+        payload: &ChatPayload,
+    ) -> Result<MessageRecord> {
+        let msg_id = Storage::new_message_id();
+        let plain = payload_to_bytes(payload)?;
+        save_payload_attachments(&self.data_dir, &msg_id, payload)?;
+        let record =
+            message_record_from_payload(&msg_id, contact_id, "out", "pending", payload);
+
+        if let Some(sent) = self
+            .try_send_payload_bytes(contact_id, &plain, &msg_id, &record)
+            .await?
+        {
             return Ok(sent);
         }
 
-        self.queue_offline(contact_id, text, &record).await
+        self.queue_offline_payload(contact_id, &plain, &record).await
     }
 
-    async fn try_send_live(
+    async fn try_send_payload_bytes(
         &self,
         contact_id: &str,
-        text: &str,
+        plain: &[u8],
         msg_id: &str,
+        display: &MessageRecord,
     ) -> Result<Option<MessageRecord>> {
         let mut guard = self.active.lock().await;
         let Some(active) = guard.as_mut() else {
@@ -1286,22 +1453,77 @@ impl CorgigramApp {
             return Ok(None);
         }
 
-        let encrypted = active.session.encrypt(text.as_bytes())?;
+        let encrypted = active.session.encrypt(plain)?;
         active
             .peer
             .send(&WireMessage::EncryptedChat { ciphertext: encrypted }.to_bytes()?)
             .await?;
 
-        let record = MessageRecord {
-            id: msg_id.to_string(),
-            contact_id: contact_id.to_string(),
-            direction: "out".into(),
-            body: text.to_string(),
-            status: "sent".into(),
-            created_at: Utc::now(),
-        };
+        let mut record = display.clone();
+        record.id = msg_id.to_string();
+        record.status = "sent".into();
         self.storage.upsert_message(&record)?;
         Ok(Some(record))
+    }
+
+    fn ingest_incoming_plain(
+        &self,
+        msg_id: &str,
+        contact_id: &str,
+        plain: &[u8],
+    ) -> Result<MessageRecord> {
+        let payload = bytes_to_payload(plain);
+        save_payload_attachments(&self.data_dir, msg_id, &payload)?;
+        let record =
+            message_record_from_payload(msg_id, contact_id, "in", "delivered", &payload);
+        self.storage.upsert_message(&record)?;
+        Ok(record)
+    }
+
+    async fn queue_offline_payload(
+        &self,
+        contact_id: &str,
+        plain: &[u8],
+        record: &MessageRecord,
+    ) -> Result<MessageRecord> {
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let contact = self
+            .storage
+            .get_contact(contact_id)?
+            .context("contact not found")?;
+        let me = identity.public.user_id.clone();
+
+        let ciphertext = encrypt_mailbox(&identity, &contact.bundle, plain)?;
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(plain);
+
+        if self.config.firebase_configured() {
+            let fb = self.firebase()?;
+            fb.publish_mailbox(contact_id, &record.id, &me, &ciphertext)
+                .await?;
+            fb.publish_mailbox_ping(contact_id, &me, &record.id)
+                .await
+                .ok();
+            let sent = MessageRecord {
+                status: "sent".into(),
+                ..record.clone()
+            };
+            self.storage.upsert_message(&sent)?;
+            return Ok(sent);
+        }
+
+        self.storage.insert_outbox(&OutboxRecord {
+            id: record.id.clone(),
+            contact_id: contact_id.to_string(),
+            body: payload_b64,
+            status: "queued_local".into(),
+            created_at: record.created_at,
+        })?;
+        let queued = MessageRecord {
+            status: "queued_local".into(),
+            ..record.clone()
+        };
+        self.storage.upsert_message(&queued)?;
+        Ok(queued)
     }
 
     async fn decrypt_mailbox_for_contact(
@@ -1328,107 +1550,62 @@ impl CorgigramApp {
         }
     }
 
-    async fn queue_offline(&self, contact_id: &str, text: &str, record: &MessageRecord) -> Result<MessageRecord> {
-        let identity = self.identity.as_ref().context("no identity")?.clone();
-        let contact = self
-            .storage
-            .get_contact(contact_id)?
-            .context("contact not found")?;
-        let me = identity.public.user_id.clone();
-
-        let ciphertext = encrypt_mailbox(&identity, &contact.bundle, text.as_bytes())?;
-
-        if self.config.firebase_configured() {
-            let fb = self.firebase()?;
-            fb.publish_mailbox(contact_id, &record.id, &me, &ciphertext)
-                .await?;
-            fb.publish_mailbox_ping(contact_id, &me, &record.id)
-                .await
-                .ok();
-            let sent = MessageRecord {
-                id: record.id.clone(),
-                contact_id: contact_id.to_string(),
-                direction: "out".into(),
-                body: text.to_string(),
-                status: "sent".into(),
-                created_at: record.created_at,
-            };
-            self.storage.upsert_message(&sent)?;
-            return Ok(sent);
+    async fn process_mailbox_entry(
+        &self,
+        msg_id: &str,
+        entry: &MailboxEntry,
+        fb: &FirebaseSignaling,
+        identity: &Identity,
+        me: &str,
+    ) -> Result<Option<MessageRecord>> {
+        if self.storage.message_exists(msg_id)? {
+            fb.delete_mailbox(me, msg_id).await.ok();
+            return Ok(None);
         }
-
-        self.storage.insert_outbox(&OutboxRecord {
-            id: record.id.clone(),
-            contact_id: contact_id.to_string(),
-            body: text.to_string(),
-            status: "queued_local".into(),
-            created_at: record.created_at,
-        })?;
-        let queued = MessageRecord {
-            id: record.id.clone(),
-            contact_id: contact_id.to_string(),
-            direction: "out".into(),
-            body: text.to_string(),
-            status: "queued_local".into(),
-            created_at: record.created_at,
+        let contact = match self.storage.get_contact(&entry.from)? {
+            Some(contact) => contact,
+            None => return Ok(None),
         };
-        self.storage.upsert_message(&queued)?;
-        Ok(queued)
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(&entry.ciphertext) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        let plain = match self
+            .decrypt_mailbox_for_contact(identity, &contact, &bytes, fb)
+            .await
+        {
+            Ok(plain) => plain,
+            Err(_) => return Ok(None),
+        };
+        let record = self.ingest_incoming_plain(msg_id, &entry.from, &plain)?;
+        fb.delete_mailbox(me, msg_id).await.ok();
+        Ok(Some(record))
     }
 
     pub async fn sync_mailbox(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {
-        if !self.config.firebase_configured() {
-            return Ok(vec![]);
-        }
-        let identity = self.identity.as_ref().context("no identity")?.clone();
-        let contact = self
-            .storage
-            .get_contact(contact_id)?
-            .context("contact not found")?;
-        let me = self.my_user_id()?;
-        let fb = self.firebase()?;
-        let entries = fb.list_mailbox(&me).await?;
-        let mut received = Vec::new();
-
-        for (msg_id, entry) in entries {
-            if entry.from != contact_id {
-                continue;
-            }
-            if self.storage.message_exists(&msg_id)? {
-                fb.delete_mailbox(&me, &msg_id).await.ok();
-                continue;
-            }
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(&entry.ciphertext) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let plain = match self
-                .decrypt_mailbox_for_contact(&identity, &contact, &bytes, &fb)
-                .await
-            {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let record = MessageRecord {
-                id: msg_id.clone(),
-                contact_id: contact_id.to_string(),
-                direction: "in".into(),
-                body: String::from_utf8_lossy(&plain).into_owned(),
-                status: "delivered".into(),
-                created_at: Utc::now(),
-            };
-            self.storage.upsert_message(&record)?;
-            fb.delete_mailbox(&me, &msg_id).await.ok();
-            received.push(record);
-        }
-        Ok(received)
+        let received = self.sync_all_mailboxes().await?;
+        Ok(received
+            .into_iter()
+            .filter(|message| message.contact_id == contact_id)
+            .collect())
     }
 
     pub async fn flush_outbox(&self, contact_id: &str) -> Result<()> {
         let items = self.storage.list_outbox(Some(contact_id))?;
         for item in items {
+            let plain = base64::engine::general_purpose::STANDARD
+                .decode(&item.body)
+                .unwrap_or_else(|_| item.body.as_bytes().to_vec());
+            let payload = bytes_to_payload(&plain);
+            let display = message_record_from_payload(
+                &item.id,
+                &item.contact_id,
+                "out",
+                "pending",
+                &payload,
+            );
             if self
-                .try_send_live(&item.contact_id, &item.body, &item.id)
+                .try_send_payload_bytes(&item.contact_id, &plain, &item.id, &display)
                 .await?
                 .is_some()
             {
@@ -1439,41 +1616,38 @@ impl CorgigramApp {
         Ok(())
     }
 
-    /// Pull mailbox for every contact; errors on one contact do not block others.
+    /// Pull mailbox once; errors on one entry do not block others.
     pub async fn sync_all_mailboxes(&self) -> Result<Vec<MessageRecord>> {
-        let mut received = Vec::new();
         if !self.config.firebase_configured() {
-            return Ok(received);
+            return Ok(vec![]);
         }
-        let me = match self.my_user_id() {
-            Ok(id) => id,
-            Err(_) => return Ok(received),
-        };
-        let fb = match self.firebase() {
-            Ok(f) => f,
-            Err(_) => return Ok(received),
-        };
+        let identity = self.identity.as_ref().context("no identity")?.clone();
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
 
-        let mut priority: Vec<String> = Vec::new();
         if let Ok(pings) = fb.list_mailbox_pings(&me).await {
-            for (from_id, ping) in pings {
-                if self.storage.get_contact(&from_id)?.is_some() {
-                    priority.push(from_id.clone());
-                }
-                if let Ok(msgs) = self.sync_mailbox(&from_id).await {
-                    received.extend(msgs);
-                }
+            for (from_id, _) in pings {
                 fb.delete_mailbox_ping(&me, &from_id).await.ok();
-                let _ = ping;
             }
         }
 
-        for contact in self.storage.list_contacts()? {
-            if priority.contains(&contact.user_id) {
+        let known_contacts: HashSet<String> = self
+            .storage
+            .list_contacts()?
+            .into_iter()
+            .map(|contact| contact.user_id)
+            .collect();
+        let entries = fb.list_mailbox(&me).await?;
+        let mut received = Vec::new();
+        for (msg_id, entry) in entries {
+            if !known_contacts.contains(&entry.from) {
                 continue;
             }
-            if let Ok(msgs) = self.sync_mailbox(&contact.user_id).await {
-                received.extend(msgs);
+            if let Ok(Some(record)) = self
+                .process_mailbox_entry(&msg_id, &entry, &fb, &identity, &me)
+                .await
+            {
+                received.push(record);
             }
         }
         Ok(received)
@@ -1484,7 +1658,7 @@ impl CorgigramApp {
         self.recover_stale_handshakes().await;
         self.maybe_heartbeat_presence().await;
         let _ = self.handle_connect_pings().await;
-        let _ = self.sync_contact_presence().await;
+        self.maybe_sync_contact_presence().await;
         let _ = self.maintain_wanted_connection().await;
 
         if let Ok(Some(contact_id)) = self.poll_signaling().await {
@@ -1539,17 +1713,13 @@ impl CorgigramApp {
             .await
             {
                 Ok(Some(bytes)) => {
-                    if let WireMessage::EncryptedChat { ciphertext } = WireMessage::from_bytes(&bytes)? {
+                    if let WireMessage::EncryptedChat { ciphertext } =
+                        WireMessage::from_bytes(&bytes)?
+                    {
                         let plain = active.session.decrypt(&ciphertext)?;
-                        let record = MessageRecord {
-                            id: Storage::new_message_id(),
-                            contact_id: active.contact_id.clone(),
-                            direction: "in".into(),
-                            body: String::from_utf8_lossy(&plain).into_owned(),
-                            status: "delivered".into(),
-                            created_at: Utc::now(),
-                        };
-                        self.storage.upsert_message(&record)?;
+                        let msg_id = Storage::new_message_id();
+                        let record =
+                            self.ingest_incoming_plain(&msg_id, &active.contact_id, &plain)?;
                         received.push(record);
                     }
                 }

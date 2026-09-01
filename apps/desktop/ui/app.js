@@ -6,6 +6,11 @@ let activeContactId = null;
 let pendingOnboardAvatar = null;
 let pendingProfileAvatar = null;
 let profileRemoveAvatar = false;
+let pendingAttachments = [];
+const avatarCache = new Map();
+let refreshTimer = null;
+let loadingOlder = false;
+let hasMoreMessages = true;
 
 function $(id) { return document.getElementById(id); }
 
@@ -83,6 +88,23 @@ function updateProfileFooter() {
   setAvatarEl($("profile-avatar"), profile.display_name, profile.avatar_data_url);
 }
 
+function debouncedRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => refresh(), 180);
+}
+
+async function ensureContactAvatar(contactId) {
+  if (avatarCache.has(contactId)) return avatarCache.get(contactId);
+  try {
+    const url = await invoke("get_contact_avatar", { contactId });
+    avatarCache.set(contactId, url ?? null);
+    return url ?? null;
+  } catch {
+    avatarCache.set(contactId, null);
+    return null;
+  }
+}
+
 function updateOutboxBadge() {
   const badge = $("outbox-badge");
   const count = snapshot?.outbox_count ?? 0;
@@ -118,7 +140,10 @@ async function refresh() {
   if (activeContactId) {
     await refreshChatStatus();
     const c = snapshot.contacts.find(x => x.user_id === activeContactId);
-    if (c) setAvatarEl($("chat-avatar"), c.display_name, c.avatar_data_url);
+    if (c) {
+      const avatar = await ensureContactAvatar(c.user_id);
+      setAvatarEl($("chat-avatar"), c.display_name, avatar);
+    }
   }
 }
 
@@ -200,7 +225,12 @@ function renderContacts() {
     avatarWrap.className = "avatar-wrap";
     const avatar = document.createElement("div");
     avatar.className = "avatar";
-    setAvatarEl(avatar, c.display_name, c.avatar_data_url);
+    setAvatarEl(avatar, c.display_name, avatarCache.get(c.user_id) ?? null);
+    ensureContactAvatar(c.user_id).then((url) => {
+      if (activeContactId === c.user_id || snapshot?.contacts?.some(x => x.user_id === c.user_id)) {
+        setAvatarEl(avatar, c.display_name, url);
+      }
+    });
     avatarWrap.appendChild(avatar);
     if (snapshot.contact_presence?.[c.user_id]) {
       const dot = document.createElement("span");
@@ -217,20 +247,24 @@ function renderContacts() {
       </div>
       <div class="contact-preview">${escapeHtml(contactPreview(c))}</div>`;
     btn.appendChild(meta);
-    btn.onclick = () => selectContact(c.user_id, c.display_name, c.avatar_data_url);
+    btn.onclick = () => selectContact(c.user_id, c.display_name);
     li.appendChild(btn);
     list.appendChild(li);
   }
 }
 
-async function selectContact(id, name, avatarUrl = null) {
+async function selectContact(id, name) {
   activeContactId = id;
+  hasMoreMessages = true;
+  pendingAttachments = [];
+  renderAttachPreview();
   renderContacts();
   hide($("empty-state"));
   show($("chat-view"));
   setChatOpen(true);
   $("chat-title").textContent = name;
-  setAvatarEl($("chat-avatar"), name, avatarUrl);
+  const avatar = await ensureContactAvatar(id);
+  setAvatarEl($("chat-avatar"), name, avatar);
   await setWantedContact(id);
   await refreshChatStatus();
   await loadMessages();
@@ -285,11 +319,36 @@ async function refreshChatStatus() {
 
 async function loadMessages() {
   if (!activeContactId) return;
-  const msgs = await invoke("get_messages", { contactId: activeContactId });
+  hasMoreMessages = true;
+  const msgs = await invoke("get_messages_page", { contactId: activeContactId, beforeCreatedAt: null, limit: 50 });
   const box = $("messages");
   box.innerHTML = "";
+  hasMoreMessages = msgs.length >= 50;
   for (const m of msgs) appendMessage(m, false);
   box.scrollTop = box.scrollHeight;
+}
+
+async function loadOlderMessages() {
+  if (!activeContactId || loadingOlder || !hasMoreMessages) return;
+  const box = $("messages");
+  const first = box.querySelector(".msg-row");
+  if (!first) return;
+  const before = first.dataset.createdAt;
+  if (!before) return;
+  loadingOlder = true;
+  try {
+    const prevHeight = box.scrollHeight;
+    const msgs = await invoke("get_messages_page", {
+      contactId: activeContactId,
+      beforeCreatedAt: before,
+      limit: 50,
+    });
+    hasMoreMessages = msgs.length >= 50;
+    for (const m of msgs) appendMessage(m, false, true);
+    box.scrollTop = box.scrollHeight - prevHeight;
+  } finally {
+    loadingOlder = false;
+  }
 }
 
 async function syncActiveChatMessages() {
@@ -343,7 +402,58 @@ function ensureDateSeparator(box, iso) {
   box.appendChild(sep);
 }
 
-function appendMessage(m, scroll = true) {
+function fileIconSvg() {
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
+}
+
+async function renderMessageMedia(m, container) {
+  const kind = m.kind || "text";
+  if (kind === "text") return;
+
+  if (kind === "image" || kind === "file") {
+    try {
+      const att = await invoke("read_attachment", { messageId: m.id, index: 0 });
+      if (kind === "image" && att.mime?.startsWith("image/")) {
+        const wrap = document.createElement("div");
+        wrap.className = "bubble-media";
+        const img = document.createElement("img");
+        img.src = `data:${att.mime};base64,${att.data_base64}`;
+        img.alt = att.name || "изображение";
+        wrap.appendChild(img);
+        container.prepend(wrap);
+      } else {
+        const file = document.createElement("div");
+        file.className = "bubble-file";
+        file.innerHTML = `${fileIconSvg()}<span>${escapeHtml(att.name || m.attachment_name || "Файл")}</span>`;
+        container.prepend(file);
+      }
+    } catch (err) {
+      console.warn("attachment load failed", err);
+    }
+    return;
+  }
+
+  if (kind === "album") {
+    const grid = document.createElement("div");
+    grid.className = "bubble-media";
+    for (let i = 0; i < 4; i++) {
+      try {
+        const att = await invoke("read_attachment", { messageId: m.id, index: i });
+        if (att.mime?.startsWith("image/")) {
+          const img = document.createElement("img");
+          img.src = `data:${att.mime};base64,${att.data_base64}`;
+          img.alt = att.name || `фото ${i + 1}`;
+          grid.appendChild(img);
+        }
+      } catch {
+        break;
+      }
+    }
+    if (grid.childElementCount) container.prepend(grid);
+  }
+}
+
+function appendMessage(m, scroll = true, prepend = false) {
   const box = $("messages");
   if (box.querySelector(`.msg-row[data-msg-id="${m.id}"]`)) {
     updateMessageStatus(m.id, m.status);
@@ -353,21 +463,30 @@ function appendMessage(m, scroll = true) {
   const row = document.createElement("div");
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
   row.dataset.msgId = m.id;
+  row.dataset.createdAt = m.created_at;
   const pending = m.status === "pending" || m.status === "queued_local";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  const caption = (m.kind && m.kind !== "text") ? m.body : escapeHtml(m.body);
+  bubble.innerHTML = `<div class="bubble-caption">${caption}</div>`;
   const inner = document.createElement("div");
-  inner.innerHTML = `
-    <div class="bubble">${escapeHtml(m.body)}</div>
-    <div class="msg-time">${formatTime(m.created_at)}${pending ? " · в очереди" : ""}</div>`;
-  if (m.direction === "in" && activeContactId) {
-    const c = snapshot?.contacts?.find(x => x.user_id === activeContactId);
-    const av = document.createElement("div");
-    av.className = "avatar msg-avatar";
-    setAvatarEl(av, c?.display_name ?? "?", c?.avatar_data_url);
-    row.appendChild(av);
-  }
+  inner.appendChild(bubble);
+  const timeEl = document.createElement("div");
+  timeEl.className = "msg-time";
+  timeEl.textContent = `${formatTime(m.created_at)}${pending ? " · в очереди" : ""}`;
+  inner.appendChild(timeEl);
   row.appendChild(inner);
-  box.appendChild(row);
-  if (scroll) box.scrollTop = box.scrollHeight;
+  if (prepend) {
+    const firstRow = box.querySelector(".msg-row");
+    if (firstRow) box.insertBefore(row, firstRow);
+    else box.appendChild(row);
+  } else {
+    box.appendChild(row);
+  }
+  renderMessageMedia(m, bubble).then(() => {
+    if (scroll) box.scrollTop = box.scrollHeight;
+  });
+  if (scroll && (m.kind || "text") === "text") box.scrollTop = box.scrollHeight;
 }
 
 $("btn-onboard-avatar").onclick = () => $("input-onboard-avatar").click();
@@ -553,6 +672,80 @@ $("btn-safety").onclick = async () => {
   openModal("modal-safety");
 };
 
+async function readFileAsBase64(file) {
+  if (file.size > 4 * 1024 * 1024) {
+    throw new Error(`«${file.name}» больше 4 МБ`);
+  }
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function renderAttachPreview() {
+  const panel = $("attach-preview");
+  if (!pendingAttachments.length) {
+    hide(panel);
+    panel.innerHTML = "";
+    return;
+  }
+  show(panel);
+  panel.innerHTML = "";
+  pendingAttachments.forEach((item, index) => {
+    const chip = document.createElement("div");
+    chip.className = "attach-chip";
+    if (item.previewUrl) {
+      const img = document.createElement("img");
+      img.src = item.previewUrl;
+      img.alt = item.name;
+      chip.appendChild(img);
+    }
+    const label = document.createElement("span");
+    label.textContent = item.name;
+    chip.appendChild(label);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.onclick = () => {
+      pendingAttachments.splice(index, 1);
+      renderAttachPreview();
+    };
+    chip.appendChild(remove);
+    panel.appendChild(chip);
+  });
+}
+
+$("btn-attach").onclick = () => $("input-attach").click();
+$("input-attach").onchange = async (e) => {
+  const files = [...(e.target.files || [])];
+  e.target.value = "";
+  for (const file of files) {
+    if (pendingAttachments.length >= 10) {
+      alert("Максимум 10 файлов за раз");
+      break;
+    }
+    try {
+      const dataBase64 = await readFileAsBase64(file);
+      const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+      pendingAttachments.push({
+        name: file.name,
+        mime: file.type || "application/octet-stream",
+        dataBase64,
+        previewUrl,
+      });
+    } catch (err) {
+      alert(err.message || err);
+    }
+  }
+  renderAttachPreview();
+};
+
+$("messages").addEventListener("scroll", () => {
+  const box = $("messages");
+  if (box.scrollTop < 80) loadOlderMessages();
+});
+
 $("btn-send").onclick = sendCurrentMessage;
 $("message-input").onkeydown = (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -563,12 +756,28 @@ $("message-input").onkeydown = (e) => {
 
 async function sendCurrentMessage() {
   const text = $("message-input").value.trim();
-  if (!text || !activeContactId) return;
+  if (!activeContactId) return;
+  if (!text && !pendingAttachments.length) return;
   try {
-    const msg = await invoke("send_message", { contactId: activeContactId, text });
+    let msg;
+    if (pendingAttachments.length) {
+      msg = await invoke("send_attachments", {
+        contactId: activeContactId,
+        attachments: pendingAttachments.map(item => ({
+          name: item.name,
+          mime: item.mime,
+          dataBase64: item.dataBase64,
+        })),
+        caption: text || null,
+      });
+      pendingAttachments = [];
+      renderAttachPreview();
+    } else {
+      msg = await invoke("send_message", { contactId: activeContactId, text });
+    }
     $("message-input").value = "";
     appendMessage(msg);
-    await refresh();
+    debouncedRefresh();
   } catch (e) {
     alert("Не удалось отправить: " + e);
   }
@@ -615,7 +824,7 @@ listen("message-sent", async () => {
   await syncActiveChatMessages();
 });
 listen("contacts-updated", async () => {
-  await refresh();
+  debouncedRefresh();
   if (activeContactId) {
     await refreshChatStatus();
     await syncActiveChatMessages();

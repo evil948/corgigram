@@ -958,6 +958,15 @@ function setSendInFlight(active) {
   bar?.classList.toggle("is-sending", active);
 }
 
+function revokeAttachmentPreview(item) {
+  if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+}
+
+function clearPendingAttachments() {
+  for (const item of pendingAttachments) revokeAttachmentPreview(item);
+  pendingAttachments = [];
+}
+
 function renderAttachPreview() {
   const panel = $("attach-preview");
   if (!pendingAttachments.length) {
@@ -988,6 +997,7 @@ function renderAttachPreview() {
     remove.type = "button";
     remove.textContent = "×";
     remove.onclick = () => {
+      revokeAttachmentPreview(pendingAttachments[index]);
       pendingAttachments.splice(index, 1);
       renderAttachPreview();
     };
@@ -1045,7 +1055,7 @@ async function sendCurrentMessage() {
         })),
         caption: text || null,
       });
-      pendingAttachments = [];
+      clearPendingAttachments();
       renderAttachPreview();
     } else {
       msg = await invoke("send_message", { contactId: activeContactId, text });

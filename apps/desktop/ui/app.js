@@ -14,6 +14,7 @@ let loadingOlder = false;
 let hasMoreMessages = true;
 const INITIAL_MSG_LIMIT = 30;
 const pendingMediaByRow = new WeakMap();
+const IS_LINUX = /linux/i.test(navigator.userAgent || "");
 
 const mediaLoadObserver = new IntersectionObserver((entries) => {
   for (const entry of entries) {
@@ -912,6 +913,78 @@ async function readFileAsBase64(file) {
   return btoa(binary);
 }
 
+function insertTextAtCursor(text) {
+  const input = $("message-input");
+  if (!input || !text) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  const pos = start + text.length;
+  input.selectionStart = pos;
+  input.selectionEnd = pos;
+  input.focus();
+}
+
+function filesFromPasteEvent(e) {
+  const files = [];
+  const items = [...(e.clipboardData?.items || [])];
+  for (const item of items) {
+    if (item.kind === "file") {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+      continue;
+    }
+    if (item.type?.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (!files.length && e.clipboardData?.files?.length) {
+    files.push(...e.clipboardData.files);
+  }
+  return files;
+}
+
+async function readNativeClipboardImageFile() {
+  try {
+    const img = await invoke("read_clipboard_image");
+    if (!img?.dataBase64) return null;
+    const binary = atob(img.dataBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new File([bytes], img.name || "clipboard.png", {
+      type: img.mime || "image/png",
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function handleComposePaste(e) {
+  if (!activeContactId) return;
+
+  const domFiles = filesFromPasteEvent(e);
+  if (domFiles.length) {
+    e.preventDefault();
+    await addAttachmentsFromFiles(domFiles);
+    return;
+  }
+
+  if (!IS_LINUX) return;
+
+  e.preventDefault();
+  const nativeFile = await readNativeClipboardImageFile();
+  if (nativeFile) {
+    await addAttachmentsFromFiles([nativeFile]);
+    return;
+  }
+
+  const text =
+    e.clipboardData?.getData("text/plain") ||
+    (await invoke("read_clipboard_text").catch(() => null));
+  insertTextAtCursor(text || "");
+}
+
 function pasteFileName(file, index) {
   if (file.name) return file.name;
   const ext = (file.type || "application/octet-stream").split("/")[1] || "bin";
@@ -1013,17 +1086,7 @@ $("input-attach").onchange = async (e) => {
   await addAttachmentsFromFiles(files);
 };
 
-$("message-input").addEventListener("paste", async (e) => {
-  if (!activeContactId) return;
-  const items = [...(e.clipboardData?.items || [])];
-  const files = items
-    .filter((item) => item.kind === "file")
-    .map((item) => item.getAsFile())
-    .filter(Boolean);
-  if (!files.length) return;
-  e.preventDefault();
-  await addAttachmentsFromFiles(files);
-});
+$("message-input").addEventListener("paste", handleComposePaste);
 
 $("messages").addEventListener("scroll", () => {
   const box = $("messages");

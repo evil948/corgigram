@@ -34,6 +34,60 @@ struct AttachmentInput {
     data_base64: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardImageDto {
+    mime: String,
+    data_base64: String,
+    name: String,
+}
+
+fn encode_rgba_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    use image::{ImageBuffer, Rgba};
+    let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width as u32, height as u32, rgba.to_vec())
+        .ok_or_else(|| "invalid clipboard image dimensions".to_string())?;
+    let mut buf = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut buf),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+#[tauri::command]
+fn read_clipboard_image() -> Result<Option<ClipboardImageDto>, String> {
+    use arboard::Clipboard;
+    let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+    let image = match clipboard.get_image() {
+        Ok(img) => img,
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let png = encode_rgba_png(image.width, image.height, &image.bytes)?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok(Some(ClipboardImageDto {
+        mime: "image/png".into(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(png),
+        name: format!("clipboard-{ts}.png"),
+    }))
+}
+
+#[tauri::command]
+fn read_clipboard_text() -> Result<Option<String>, String> {
+    use arboard::Clipboard;
+    let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+    match clipboard.get_text() {
+        Ok(text) if !text.is_empty() => Ok(Some(text)),
+        Ok(_) => Ok(None),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     state.app.read().await.snapshot().map_err(|e| e.to_string())
@@ -442,6 +496,8 @@ pub fn run() {
             poll_messages,
             save_config,
             update_profile,
+            read_clipboard_image,
+            read_clipboard_text,
         ])
         .setup(move |app| {
             #[cfg(desktop)]
@@ -495,7 +551,7 @@ pub fn run() {
                     else {
                         continue;
                     };
-                    sleep_ms = if connecting { 100 } else { 250 };
+                    sleep_ms = if connecting { 50 } else { 200 };
                     for msg in &messages {
                         let _ = tick_handle.emit("message-received", msg);
                     }

@@ -153,7 +153,7 @@ async fn cmd_ping(
     let remote_bundle = load_bundle(remote_bundle_path)?;
     let ice = IceConfig::localhost();
 
-    let (mut peer, offer_sdp) = run_offerer_role(&ice).await?;
+    let (mut peer, offer_sdp) = run_offerer_role(&ice, true).await?;
     fs::write(&out_offer, &offer_sdp).with_context(|| format!("write {}", out_offer.display()))?;
     println!("offer written to {}, waiting for answer...", out_offer.display());
 
@@ -191,7 +191,7 @@ async fn cmd_pong(
     println!("waiting for offer at {}...", wait_offer.display());
     let offer_sdp = wait_for_file(&wait_offer, 120).await?;
 
-    let (mut peer, answer_sdp) = run_answerer_role(&ice, &offer_sdp).await?;
+    let (mut peer, answer_sdp) = run_answerer_role(&ice, &offer_sdp, true).await?;
     fs::write(&out_answer, &answer_sdp)
         .with_context(|| format!("write {}", out_answer.display()))?;
     println!("answer written to {}", out_answer.display());

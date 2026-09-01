@@ -185,7 +185,7 @@ pub async fn create_offer(ice: &IceConfig) -> Result<String> {
     pc.set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&pc, ice).await?;
+    wait_for_ice_gathering(&pc, ice, false).await?;
     let offer_sdp = pc
         .local_description()
         .await
@@ -207,7 +207,7 @@ pub async fn create_answer(ice: &IceConfig, offer_sdp: &str) -> Result<String> {
     pc.set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&pc, ice).await?;
+    wait_for_ice_gathering(&pc, ice, false).await?;
     let answer_sdp = pc
         .local_description()
         .await
@@ -394,16 +394,25 @@ async fn wait_for_incoming_data_channel(inner: &Inner) -> Result<()> {
     Err(anyhow!("timed out waiting for incoming data channel"))
 }
 
-async fn wait_for_ice_gathering(pc: &Arc<RTCPeerConnection>, ice: &IceConfig) -> Result<()> {
-    let needs_turn = ice.has_turn();
-    let max_wait = if needs_turn { 600 } else { 100 };
+async fn wait_for_ice_gathering(
+    pc: &Arc<RTCPeerConnection>,
+    ice: &IceConfig,
+    trickle: bool,
+) -> Result<()> {
+    let max_wait = if trickle {
+        // Trickle ICE continues after SDP exchange; publish SDP quickly.
+        8
+    } else if ice.has_turn() {
+        600
+    } else {
+        100
+    };
     for _ in 0..max_wait {
         if pc.ice_gathering_state() == RTCIceGatheringState::Complete {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    // Trickle ICE continues after SDP exchange; don't fail on slow TURN allocation.
     Ok(())
 }
 
@@ -443,7 +452,7 @@ pub async fn run_local_demo(ice: &IceConfig) -> Result<(PeerConnection, PeerConn
         .set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&offerer_pc, ice).await?;
+    wait_for_ice_gathering(&offerer_pc, ice, false).await?;
     let offer_sdp = offerer_pc
         .local_description()
         .await
@@ -463,7 +472,7 @@ pub async fn run_local_demo(ice: &IceConfig) -> Result<(PeerConnection, PeerConn
         .set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&answerer_pc, ice).await?;
+    wait_for_ice_gathering(&answerer_pc, ice, false).await?;
     let answer_sdp = answerer_pc
         .local_description()
         .await
@@ -486,7 +495,11 @@ pub async fn run_local_demo(ice: &IceConfig) -> Result<(PeerConnection, PeerConn
 }
 
 /// Answerer role: import offer SDP on a live peer, produce answer SDP.
-pub async fn run_answerer_role(ice: &IceConfig, offer_sdp: &str) -> Result<(PeerConnection, String)> {
+pub async fn run_answerer_role(
+    ice: &IceConfig,
+    offer_sdp: &str,
+    trickle: bool,
+) -> Result<(PeerConnection, String)> {
     let inner = new_peer(ice).await?;
     let pc = Arc::clone(&inner.pc);
 
@@ -499,7 +512,7 @@ pub async fn run_answerer_role(ice: &IceConfig, offer_sdp: &str) -> Result<(Peer
     pc.set_local_description(answer)
         .await
         .context("set local answer")?;
-    wait_for_ice_gathering(&pc, ice).await?;
+    wait_for_ice_gathering(&pc, ice, trickle).await?;
     let answer_sdp = pc
         .local_description()
         .await
@@ -510,7 +523,7 @@ pub async fn run_answerer_role(ice: &IceConfig, offer_sdp: &str) -> Result<(Peer
 }
 
 /// Offerer role: create offer on a live peer (keeps connection for later answer).
-pub async fn run_offerer_role(ice: &IceConfig) -> Result<(PeerConnection, String)> {
+pub async fn run_offerer_role(ice: &IceConfig, trickle: bool) -> Result<(PeerConnection, String)> {
     let inner = new_peer(ice).await?;
     let pc = Arc::clone(&inner.pc);
 
@@ -524,7 +537,7 @@ pub async fn run_offerer_role(ice: &IceConfig) -> Result<(PeerConnection, String
     pc.set_local_description(offer)
         .await
         .context("set local offer")?;
-    wait_for_ice_gathering(&pc, ice).await?;
+    wait_for_ice_gathering(&pc, ice, trickle).await?;
     let offer_sdp = pc
         .local_description()
         .await

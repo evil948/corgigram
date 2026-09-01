@@ -9,8 +9,8 @@ async fn elixir_turn_trickle_connect() {
         .expect("fetch elixir-webrtc turn");
     ice.add_turn_server(turn);
 
-    let (offerer, offer_sdp) = run_offerer_role(&ice).await.expect("offerer");
-    let (answerer, answer_sdp) = run_answerer_role(&ice, &offer_sdp)
+    let (offerer, offer_sdp) = run_offerer_role(&ice, true).await.expect("offerer");
+    let (answerer, answer_sdp) = run_answerer_role(&ice, &offer_sdp, true)
         .await
         .expect("answerer");
     offerer

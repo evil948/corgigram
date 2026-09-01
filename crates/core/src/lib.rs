@@ -6,7 +6,7 @@ pub mod turn;
 
 pub use app::{
     AppSnapshot, ConnectAnswerResult, ConnectAutoResult, ConnectDiagnose, ConnectOfferResult,
-    CorgigramApp, ProfileInfo, SharedApp,
+    CorgigramApp, InvitationInfo, ProfileInfo, SharedApp,
 };
 pub use config::AppConfig;
 pub use config::DEFAULT_FIREBASE_DATABASE_URL;

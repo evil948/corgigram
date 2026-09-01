@@ -112,12 +112,51 @@ async function refresh() {
   show($("app"));
   updateProfileFooter();
   updateOutboxBadge();
+  renderInvitations();
   renderContacts();
   updateConnectButton();
   if (activeContactId) {
     await refreshChatStatus();
     const c = snapshot.contacts.find(x => x.user_id === activeContactId);
     if (c) setAvatarEl($("chat-avatar"), c.display_name, c.avatar_data_url);
+  }
+}
+
+function renderInvitations() {
+  const panel = $("invitations-panel");
+  const invites = snapshot?.pending_invitations ?? [];
+  if (!invites.length) {
+    hide(panel);
+    panel.innerHTML = "";
+    return;
+  }
+  show(panel);
+  panel.innerHTML = `<div class="invitations-title">Приглашения</div>`;
+  for (const inv of invites) {
+    const row = document.createElement("div");
+    row.className = "invitation-row";
+    row.innerHTML = `
+      <div class="invitation-meta">
+        <div class="invitation-name">${escapeHtml(inv.display_name)}</div>
+        <div class="invitation-id">@${escapeHtml(inv.from_user_id)}</div>
+      </div>
+      <div class="invitation-actions">
+        <button type="button" class="btn-accent-sm btn-accept" data-id="${escapeHtml(inv.from_user_id)}">Принять</button>
+        <button type="button" class="btn-ghost btn-decline" data-id="${escapeHtml(inv.from_user_id)}">×</button>
+      </div>`;
+    row.querySelector(".btn-accept").onclick = async () => {
+      try {
+        await invoke("accept_invitation", { fromUserId: inv.from_user_id });
+        await refresh();
+      } catch (e) {
+        alert("Не удалось принять: " + e);
+      }
+    };
+    row.querySelector(".btn-decline").onclick = async () => {
+      await invoke("decline_invitation", { fromUserId: inv.from_user_id });
+      await refresh();
+    };
+    panel.appendChild(row);
   }
 }
 
@@ -199,10 +238,39 @@ async function loadMessages() {
   box.scrollTop = box.scrollHeight;
 }
 
+async function syncActiveChatMessages() {
+  if (!activeContactId) return;
+  const msgs = await invoke("get_messages", { contactId: activeContactId });
+  const box = $("messages");
+  const existing = new Set([...box.querySelectorAll(".msg-row")].map(r => r.dataset.msgId));
+  for (const m of msgs) {
+    if (existing.has(m.id)) {
+      updateMessageStatus(m.id, m.status);
+    } else {
+      appendMessage(m);
+    }
+  }
+}
+
+function updateMessageStatus(msgId, status) {
+  const row = $("messages").querySelector(`.msg-row[data-msg-id="${msgId}"]`);
+  if (!row) return;
+  const pending = status === "pending" || status === "queued_local";
+  const timeEl = row.querySelector(".msg-time");
+  if (!timeEl) return;
+  const base = timeEl.textContent.split(" · ")[0];
+  timeEl.textContent = pending ? `${base} · ⏳` : base;
+}
+
 function appendMessage(m, scroll = true) {
   const box = $("messages");
+  if (box.querySelector(`.msg-row[data-msg-id="${m.id}"]`)) {
+    updateMessageStatus(m.id, m.status);
+    return;
+  }
   const row = document.createElement("div");
   row.className = `msg-row ${m.direction === "out" ? "out" : "in"}`;
+  row.dataset.msgId = m.id;
   const pending = m.status === "pending" || m.status === "queued_local";
   row.innerHTML = `
     <div>
@@ -417,7 +485,8 @@ async function sendCurrentMessage() {
   }
 }
 
-$("btn-settings").onclick = async () => {
+$("btn-open-settings").onclick = async () => {
+  closeModal("modal-profile");
   snapshot = await invoke("get_snapshot");
   $("input-firebase-url").value = snapshot.firebase_database_url_override ?? "";
   $("input-firebase-url").placeholder = snapshot.firebase_database_url;
@@ -443,10 +512,16 @@ $("btn-save-settings").onclick = async () => {
 listen("message-received", (e) => {
   if (e.payload.contact_id === activeContactId) appendMessage(e.payload);
 });
-listen("message-sent", async () => { await refresh(); });
+listen("message-sent", async () => {
+  await refresh();
+  await syncActiveChatMessages();
+});
 listen("contacts-updated", async () => {
   await refresh();
-  if (activeContactId) await refreshChatStatus();
+  if (activeContactId) {
+    await refreshChatStatus();
+    await syncActiveChatMessages();
+  }
 });
 
 refresh();

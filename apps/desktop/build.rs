@@ -7,6 +7,8 @@ fn main() {
                 "get_bundle_qr",
                 "add_contact",
                 "add_contact_by_id",
+                "accept_invitation",
+                "decline_invitation",
                 "sync_directory",
                 "sync_avatars",
                 "get_messages",

@@ -42,6 +42,14 @@ pub struct SnapshotDto {
     pub firebase_database_url_override: Option<String>,
     pub firebase_uses_default_url: bool,
     pub outbox_count: i32,
+    #[serde(default)]
+    pub pending_invitations: Vec<InvitationDto>,
+}
+
+#[frb(non_final)]
+pub struct InvitationDto {
+    pub from_user_id: String,
+    pub display_name: String,
 }
 
 #[frb(non_final)]
@@ -106,6 +114,14 @@ impl From<corgigram_core::AppSnapshot> for SnapshotDto {
             firebase_database_url_override: s.firebase_database_url_override,
             firebase_uses_default_url: s.firebase_uses_default_url,
             outbox_count: s.outbox_count as i32,
+            pending_invitations: s
+                .pending_invitations
+                .into_iter()
+                .map(|i| InvitationDto {
+                    from_user_id: i.from_user_id,
+                    display_name: i.display_name,
+                })
+                .collect(),
         }
     }
 }

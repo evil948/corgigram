@@ -24,13 +24,18 @@ impl PublicIdentity {
     }
 
     pub fn safety_number(&self, other: &PublicIdentity) -> String {
+        let (first, second) = if self.user_id <= other.user_id {
+            (self, other)
+        } else {
+            (other, self)
+        };
         let mut hasher = Sha256::new();
-        hasher.update(self.user_id.as_bytes());
-        hasher.update(&self.signing_key);
-        hasher.update(&self.agreement_key);
-        hasher.update(other.user_id.as_bytes());
-        hasher.update(&other.signing_key);
-        hasher.update(&other.agreement_key);
+        hasher.update(first.user_id.as_bytes());
+        hasher.update(&first.signing_key);
+        hasher.update(&first.agreement_key);
+        hasher.update(second.user_id.as_bytes());
+        hasher.update(&second.signing_key);
+        hasher.update(&second.agreement_key);
         let digest = hasher.finalize();
         format_safety_number(&digest)
     }
@@ -177,5 +182,15 @@ mod tests {
         let second = alice.public.safety_number(&bob.public);
         assert_eq!(first, second);
         assert!(!first.is_empty());
+    }
+
+    #[test]
+    fn safety_number_is_symmetric_between_peers() {
+        let alice = Identity::generate("alice", "Alice");
+        let bob = Identity::generate("bob", "Bob");
+        assert_eq!(
+            alice.public.safety_number(&bob.public),
+            bob.public.safety_number(&alice.public)
+        );
     }
 }

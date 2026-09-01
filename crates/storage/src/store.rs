@@ -161,6 +161,16 @@ impl Storage {
             .find(|c| c.user_id == user_id))
     }
 
+    pub fn message_exists(&self, id: &str) -> Result<bool, StorageError> {
+        let conn = self.conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn insert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
         let conn = self.conn()?;
         conn.execute(

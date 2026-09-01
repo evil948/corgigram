@@ -44,6 +44,15 @@
         }
       }
     },
+    "invitations": {
+      "$userId": {
+        ".read": true,
+        "$fromUserId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
     "avatar_wants": {
       "$ownerId": {
         ".read": true,

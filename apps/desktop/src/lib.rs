@@ -94,6 +94,28 @@ async fn sync_avatars(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn accept_invitation(state: State<'_, AppState>, from_user_id: String) -> Result<ContactRecord, String> {
+    state
+        .app
+        .write()
+        .await
+        .accept_invitation(&from_user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn decline_invitation(state: State<'_, AppState>, from_user_id: String) -> Result<(), String> {
+    state
+        .app
+        .read()
+        .await
+        .decline_invitation(&from_user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_messages(state: State<'_, AppState>, contact_id: String) -> Result<Vec<MessageRecord>, String> {
     state
         .app
@@ -287,6 +309,8 @@ pub fn run() {
             get_bundle_qr,
             add_contact,
             add_contact_by_id,
+            accept_invitation,
+            decline_invitation,
             sync_directory,
             sync_avatars,
             get_messages,

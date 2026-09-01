@@ -34,12 +34,13 @@
       <header class="sidebar-header">
         <div class="sidebar-title">
           <span class="logo-small">Corgigram</span>
-          <button id="btn-settings" class="icon-btn" title="Настройки">⚙</button>
         </div>
         <div class="search-box">
           <input id="search-contacts" type="search" placeholder="Поиск" />
         </div>
       </header>
+
+      <div id="invitations-panel" class="invitations-panel hidden"></div>
 
       <div class="sidebar-actions">
         <button id="btn-add-contact" class="btn-ghost">+ Контакт</button>
@@ -55,7 +56,7 @@
             <span id="profile-name" class="profile-name"></span>
             <span id="profile-id" class="profile-id"></span>
           </div>
-          <span class="profile-edit-hint">✎</span>
+          <span class="profile-edit-btn" title="Редактировать профиль">✎</span>
         </button>
         <span id="outbox-badge" class="outbox-badge hidden" title="Сообщения в очереди"></span>
       </footer>
@@ -121,6 +122,7 @@
       <button type="button" id="btn-remove-avatar" class="btn-ghost btn-danger-text">Удалить аватар</button>
     </div>
     <div class="modal-actions">
+      <button type="button" id="btn-open-settings" class="btn-ghost">Настройки</button>
       <button class="btn-ghost" onclick="closeModal('modal-profile')">Отмена</button>
       <button id="btn-save-profile" class="btn-primary">Сохранить</button>
     </div>
@@ -134,7 +136,7 @@
     </div>
 
     <div id="panel-add-by-id">
-      <p class="modal-hint">Введите ID собеседника. Он должен хотя бы раз открыть Corgigram, чтобы опубликовать ключи в Firebase.</p>
+      <p class="modal-hint">Введите ID собеседника. Ему придёт приглашение — добавлять вас вручную не нужно.</p>
       <label>ID пользователя</label>
       <input id="input-contact-id" type="text" placeholder="bob" autocomplete="off" />
       <div class="modal-actions">

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-decline-invitation"
+description = "Enables the decline_invitation command without any pre-configured scope."
+commands.allow = ["decline_invitation"]
+
+[[permission]]
+identifier = "deny-decline-invitation"
+description = "Denies the decline_invitation command without any pre-configured scope."
+commands.deny = ["decline_invitation"]

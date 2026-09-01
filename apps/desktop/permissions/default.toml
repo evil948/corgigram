@@ -8,6 +8,8 @@ permissions = [
   "allow-get-bundle-qr",
   "allow-add-contact",
   "allow-add-contact-by-id",
+  "allow-accept-invitation",
+  "allow-decline-invitation",
   "allow-sync-directory",
   "allow-sync-avatars",
   "allow-get-messages",

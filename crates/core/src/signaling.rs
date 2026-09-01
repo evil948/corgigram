@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use corgigram_crypto::PreKeyBundle;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -29,6 +29,13 @@ pub struct AvatarEntry {
 pub struct DirectoryEntry {
     pub bundle: PreKeyBundle,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InvitationEntry {
+    pub from: String,
+    pub display_name: String,
+    pub ts: i64,
 }
 
 #[derive(Clone)]
@@ -270,6 +277,56 @@ impl FirebaseSignaling {
             .fetch_json::<DirectoryEntry>(&self.url(&format!("directory/{user_id}")))
             .await?;
         Ok(entry.map(|e| e.bundle))
+    }
+
+    pub async fn publish_invitation(
+        &self,
+        recipient_id: &str,
+        from_user_id: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        self.client
+            .put(self.url(&format!("invitations/{recipient_id}/{from_user_id}")))
+            .json(&json!({
+                "from": from_user_id,
+                "display_name": display_name,
+                "ts": chrono::Utc::now().timestamp()
+            }))
+            .send()
+            .await
+            .context("firebase publish invitation")?
+            .error_for_status()
+            .context("firebase publish invitation status")?;
+        Ok(())
+    }
+
+    pub async fn list_invitations(&self, user_id: &str) -> Result<Vec<(String, InvitationEntry)>> {
+        let url = self.url(&format!("invitations/{user_id}"));
+        let resp = self.client.get(&url).send().await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(vec![]);
+        }
+        let value: serde_json::Value = resp.error_for_status()?.json().await?;
+        let Some(obj) = value.as_object() else {
+            return Ok(vec![]);
+        };
+        let mut out = Vec::new();
+        for (id, entry) in obj {
+            if let Ok(parsed) = serde_json::from_value::<InvitationEntry>(entry.clone()) {
+                out.push((id.clone(), parsed));
+            }
+        }
+        out.sort_by_key(|(_, e)| e.ts);
+        Ok(out)
+    }
+
+    pub async fn delete_invitation(&self, recipient_id: &str, from_user_id: &str) -> Result<()> {
+        let _ = self
+            .client
+            .delete(self.url(&format!("invitations/{recipient_id}/{from_user_id}")))
+            .send()
+            .await;
+        Ok(())
     }
 
     /// E2E ciphertext: only `viewer_id` can decrypt with their identity + owner's bundle.

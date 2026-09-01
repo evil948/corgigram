@@ -63,10 +63,17 @@ pub struct ConnectAutoResult {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct InvitationInfo {
+    pub from_user_id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub has_identity: bool,
     pub profile: Option<ProfileInfo>,
     pub contacts: Vec<ContactRecord>,
+    pub pending_invitations: Vec<InvitationInfo>,
     pub connected_contact_id: Option<String>,
     pub connecting_contact_id: Option<String>,
     pub firebase_configured: bool,
@@ -105,6 +112,7 @@ pub struct CorgigramApp {
     wanted_contact_id: Arc<RwLock<Option<String>>>,
     pending_offer: Arc<Mutex<Option<PendingOffer>>>,
     pending_answer: Arc<Mutex<Option<PendingAnswer>>>,
+    pending_invitations: Arc<RwLock<Vec<InvitationInfo>>>,
 }
 
 impl CorgigramApp {
@@ -130,6 +138,7 @@ impl CorgigramApp {
             wanted_contact_id: Arc::new(RwLock::new(None)),
             pending_offer: Arc::new(Mutex::new(None)),
             pending_answer: Arc::new(Mutex::new(None)),
+            pending_invitations: Arc::new(RwLock::new(Vec::new())),
         };
         app.load_identity()?;
         app.reconcile_stale_outbox()?;
@@ -240,6 +249,12 @@ impl CorgigramApp {
             has_identity: self.identity.is_some(),
             profile: self.profile_info(),
             contacts: self.contacts_with_avatars()?,
+            pending_invitations: self
+                .pending_invitations
+                .read()
+                .ok()
+                .map(|g| g.clone())
+                .unwrap_or_default(),
             connected_contact_id: self
                 .live_contact_id
                 .read()
@@ -450,13 +465,20 @@ impl CorgigramApp {
         if self.storage.get_contact(&user_id)?.is_some() {
             anyhow::bail!("contact already exists");
         }
-        let bundle = self
-            .firebase()?
+        let fb = self.firebase()?;
+        let bundle = fb
             .fetch_directory(&user_id)
             .await?
             .with_context(|| format!("user '{user_id}' not found — they must open Corgigram at least once"))?;
         let contact = self.add_contact_from_bundle(bundle)?;
         let owner_id = contact.user_id.clone();
+        let me = self.my_user_id()?;
+        let my_name = self
+            .identity
+            .as_ref()
+            .map(|id| id.public.display_name.clone())
+            .unwrap_or_default();
+        fb.publish_invitation(&owner_id, &me, &my_name).await.ok();
         self.request_contact_avatar(&owner_id).await?;
         self.sync_avatar_downloads().await?;
         self.contacts_with_avatars()?
@@ -472,6 +494,75 @@ impl CorgigramApp {
             .get_contact(contact_id)?
             .context("contact not found")?;
         Ok(identity.public.safety_number(&contact.bundle.identity))
+    }
+
+    pub async fn sync_invitations(&self) -> Result<Vec<InvitationInfo>> {
+        if !self.config.firebase_configured() {
+            return Ok(vec![]);
+        }
+        let me = self.my_user_id()?;
+        let fb = self.firebase()?;
+        let entries = fb.list_invitations(&me).await?;
+        let mut invitations = Vec::new();
+        for (from_id, entry) in entries {
+            if self.storage.get_contact(&from_id)?.is_some() {
+                fb.delete_invitation(&me, &from_id).await.ok();
+                continue;
+            }
+            invitations.push(InvitationInfo {
+                from_user_id: from_id,
+                display_name: entry.display_name,
+            });
+        }
+        if let Ok(mut cache) = self.pending_invitations.write() {
+            *cache = invitations.clone();
+        }
+        Ok(invitations)
+    }
+
+    pub async fn accept_invitation(&mut self, from_user_id: &str) -> Result<ContactRecord> {
+        if !self.config.firebase_configured() {
+            anyhow::bail!("invitations require Firebase");
+        }
+        let from_user_id = normalize_user_id(from_user_id)?;
+        let me = self.my_user_id()?;
+        if from_user_id == me {
+            anyhow::bail!("invalid invitation");
+        }
+        if self.storage.get_contact(&from_user_id)?.is_some() {
+            self.firebase()?
+                .delete_invitation(&me, &from_user_id)
+                .await
+                .ok();
+            anyhow::bail!("contact already exists");
+        }
+        let fb = self.firebase()?;
+        let bundle = fb
+            .fetch_directory(&from_user_id)
+            .await?
+            .with_context(|| format!("user '{from_user_id}' not found"))?;
+        let _contact = self.add_contact_from_bundle(bundle)?;
+        fb.delete_invitation(&me, &from_user_id).await.ok();
+        self.request_contact_avatar(&from_user_id).await?;
+        self.sync_avatar_downloads().await?;
+        let _ = self.sync_invitations().await;
+        self.contacts_with_avatars()?
+            .into_iter()
+            .find(|c| c.user_id == from_user_id)
+            .context("contact missing after accept")
+    }
+
+    pub async fn decline_invitation(&self, from_user_id: &str) -> Result<()> {
+        if !self.config.firebase_configured() {
+            return Ok(());
+        }
+        let from_user_id = normalize_user_id(from_user_id)?;
+        let me = self.my_user_id()?;
+        self.firebase()?
+            .delete_invitation(&me, &from_user_id)
+            .await?;
+        let _ = self.sync_invitations().await;
+        Ok(())
     }
 
     pub fn messages(&self, contact_id: &str) -> Result<Vec<MessageRecord>> {
@@ -1043,8 +1134,32 @@ impl CorgigramApp {
             status: "sent".into(),
             created_at: Utc::now(),
         };
-        self.storage.insert_message(&record)?;
+        self.storage.upsert_message(&record)?;
         Ok(Some(record))
+    }
+
+    async fn decrypt_mailbox_for_contact(
+        &self,
+        identity: &Identity,
+        contact: &ContactRecord,
+        bytes: &[u8],
+        fb: &FirebaseSignaling,
+    ) -> Result<Vec<u8>> {
+        match decrypt_mailbox(identity, &contact.bundle, bytes) {
+            Ok(plain) => Ok(plain),
+            Err(_) => {
+                let Some(fresh) = fb.fetch_directory(&contact.user_id).await? else {
+                    anyhow::bail!("mailbox decrypt failed");
+                };
+                fresh.verify().map_err(|e| anyhow::anyhow!("invalid bundle: {e}"))?;
+                let updated = ContactRecord {
+                    bundle: fresh.clone(),
+                    ..contact.clone()
+                };
+                self.storage.upsert_contact(&updated)?;
+                decrypt_mailbox(identity, &fresh, bytes).map_err(|e| anyhow::anyhow!("mailbox decrypt: {e}"))
+            }
+        }
     }
 
     async fn queue_offline(&self, contact_id: &str, text: &str, record: &MessageRecord) -> Result<MessageRecord> {
@@ -1110,10 +1225,21 @@ impl CorgigramApp {
             if entry.from != contact_id {
                 continue;
             }
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(&entry.ciphertext)
-                .context("mailbox b64")?;
-            let plain = decrypt_mailbox(&identity, &contact.bundle, &bytes)?;
+            if self.storage.message_exists(&msg_id)? {
+                fb.delete_mailbox(&me, &msg_id).await.ok();
+                continue;
+            }
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(&entry.ciphertext) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let plain = match self
+                .decrypt_mailbox_for_contact(&identity, &contact, &bytes, &fb)
+                .await
+            {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
             let record = MessageRecord {
                 id: msg_id.clone(),
                 contact_id: contact_id.to_string(),
@@ -1122,7 +1248,7 @@ impl CorgigramApp {
                 status: "delivered".into(),
                 created_at: Utc::now(),
             };
-            self.storage.insert_message(&record)?;
+            self.storage.upsert_message(&record)?;
             fb.delete_mailbox(&me, &msg_id).await.ok();
             received.push(record);
         }
@@ -1137,6 +1263,7 @@ impl CorgigramApp {
                 .await?
                 .is_some()
             {
+                self.storage.update_message_status(&item.id, "sent")?;
                 self.storage.delete_outbox(&item.id)?;
             }
         }
@@ -1147,17 +1274,21 @@ impl CorgigramApp {
         let mut received = Vec::new();
 
         let _ = self.maintain_wanted_connection().await;
+        let _ = self.sync_invitations().await;
 
         if let Some(contact_id) = self.poll_signaling().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
+            let _ = self.flush_outbox(&contact_id).await;
         }
 
         if let Some(contact_id) = self.advance_pending_answer().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
+            let _ = self.flush_outbox(&contact_id).await;
         }
 
         if let Some(contact_id) = self.advance_pending_offer().await? {
             received.extend(self.sync_mailbox(&contact_id).await?);
+            let _ = self.flush_outbox(&contact_id).await;
         }
 
         if let Ok(me) = self.my_user_id() {
@@ -1172,6 +1303,11 @@ impl CorgigramApp {
 
         for contact in self.storage.list_contacts()? {
             received.extend(self.sync_mailbox(&contact.user_id).await?);
+        }
+
+        let live_id = self.live_contact_id.read().ok().and_then(|g| g.clone());
+        if let Some(contact_id) = live_id {
+            let _ = self.flush_outbox(&contact_id).await;
         }
 
         let mut guard = self.active.lock().await;
@@ -1197,7 +1333,7 @@ impl CorgigramApp {
                             status: "delivered".into(),
                             created_at: Utc::now(),
                         };
-                        self.storage.insert_message(&record)?;
+                        self.storage.upsert_message(&record)?;
                         received.push(record);
                     }
                 }

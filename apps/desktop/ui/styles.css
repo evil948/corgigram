@@ -395,10 +395,82 @@ input.readonly {
   color: var(--text-muted);
 }
 
-.profile-edit-hint {
+.profile-edit-btn {
+  color: var(--accent);
+  font-size: 1.05rem;
+  font-weight: 600;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  flex-shrink: 0;
+}
+
+.profile-card:hover .profile-edit-btn {
+  background: rgba(230, 126, 34, 0.28);
+}
+
+.invitations-panel {
+  margin: 0 0.75rem 0.5rem;
+  padding: 0.65rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.invitations-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.invitation-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+}
+
+.invitation-row + .invitation-row {
+  border-top: 1px solid var(--border);
+}
+
+.invitation-meta { flex: 1; min-width: 0; }
+
+.invitation-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.invitation-id {
+  font-size: 0.75rem;
   color: var(--text-muted);
-  font-size: 0.85rem;
-  opacity: 0.6;
+}
+
+.invitation-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.invitation-actions .btn-accent-sm {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.invitation-actions .btn-decline {
+  padding: 0.3rem 0.55rem;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .outbox-badge {
@@ -605,6 +677,20 @@ dialog h3 { margin-bottom: 0.35rem; font-size: 1.15rem; font-weight: 600; }
 }
 
 .modal-actions .btn-primary { width: auto; margin-top: 0; }
+
+#modal-profile .modal-actions {
+  flex-wrap: wrap;
+}
+
+#modal-profile .modal-actions .btn-primary,
+#modal-profile .modal-actions .btn-ghost {
+  width: auto;
+  margin-top: 0;
+}
+
+#modal-profile #btn-open-settings {
+  margin-right: auto;
+}
 
 .modal-tabs {
   display: flex;

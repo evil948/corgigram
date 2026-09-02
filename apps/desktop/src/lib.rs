@@ -176,7 +176,13 @@ async fn restore_identity(state: State<'_, AppState>) -> Result<ProfileInfo, Str
         .await
         .restore_identity()
         .map_err(|e| e.to_string())?;
-    let _ = state.app.read().await.sync_directory().await;
+    let sync_app = state.app.clone();
+    tauri::async_runtime::spawn(async move {
+        let app = sync_app.read().await;
+        let _ = app.sync_directory().await;
+        let _ = app.announce_online().await;
+        let _ = app.sync_avatar_downloads().await;
+    });
     Ok(profile)
 }
 
@@ -211,7 +217,13 @@ async fn create_identity(
         .await
         .create_identity(&user_id, &display_name)
         .map_err(|e| e.to_string())?;
-    let _ = state.app.read().await.sync_directory().await;
+    let sync_app = state.app.clone();
+    tauri::async_runtime::spawn(async move {
+        let app = sync_app.read().await;
+        let _ = app.sync_directory().await;
+        let _ = app.announce_online().await;
+        let _ = app.sync_avatar_downloads().await;
+    });
     Ok(profile)
 }
 

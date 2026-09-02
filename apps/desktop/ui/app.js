@@ -386,13 +386,21 @@ async function showProfileRecovery(err) {
 }
 
 async function restoreExistingProfile() {
+  const btn = $("btn-restore-identity");
+  const errEl = $("onboard-error");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  errEl.textContent = "Вход…";
+  show(errEl);
   try {
     await invoke("restore_identity");
-    hide($("onboard-error"));
+    hide(errEl);
     await refresh();
   } catch (e) {
-    $("onboard-error").textContent = `Не удалось войти: ${e}`;
-    show($("onboard-error"));
+    errEl.textContent = `Не удалось войти: ${e}`;
+    show(errEl);
+  } finally {
+    btn.disabled = false;
   }
 }
 

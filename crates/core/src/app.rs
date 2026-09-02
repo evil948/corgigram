@@ -197,6 +197,14 @@ impl CorgigramApp {
             cached_ice: Arc::new(AsyncMutex::new(None)),
         };
         app.load_identity()?;
+        if app.identity.is_none() {
+            let identity_path = app.data_dir.join("identity.json");
+            if identity_path.exists() {
+                if let Err(error) = app.restore_identity() {
+                    eprintln!("auto-restore identity failed: {error:#}");
+                }
+            }
+        }
         app.reconcile_stale_outbox()?;
         Ok(app)
     }

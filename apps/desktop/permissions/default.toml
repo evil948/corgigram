@@ -4,6 +4,8 @@
 description = "Default permissions for korki desktop commands."
 permissions = [
   "allow-get-snapshot",
+  "allow-get-profile-status",
+  "allow-restore-identity",
   "allow-mark-contact-read",
   "allow-create-identity",
   "allow-get-bundle-qr",

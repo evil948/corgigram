@@ -1257,6 +1257,27 @@ body.media-viewer-open { overflow: hidden; }
 .btn-primary:active { transform: scale(0.98); }
 .btn-primary:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 
+.btn-secondary {
+  width: 100%;
+  margin-top: 0.65rem;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.12));
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn-secondary:hover { background: rgba(255,255,255,0.06); }
+
+.onboard-error {
+  margin-top: 0.85rem;
+  color: #ffb4a2;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .btn-accent-sm {
   padding: 0.4rem 0.75rem;
   background: var(--korki-accent);

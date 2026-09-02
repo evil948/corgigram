@@ -3,6 +3,8 @@ fn main() {
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[
                 "get_snapshot",
+                "get_profile_status",
+                "restore_identity",
                 "create_identity",
                 "get_bundle_qr",
                 "add_contact",

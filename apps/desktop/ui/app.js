@@ -315,13 +315,12 @@ async function refresh() {
     snapshot = await invoke("get_snapshot");
   } catch (err) {
     console.error("get_snapshot failed:", err);
-    show($("onboarding"));
-    hide($("app"));
+    await showProfileRecovery(err);
     return;
   }
+  hide($("onboard-error"));
   if (!snapshot.has_identity) {
-    show($("onboarding"));
-    hide($("app"));
+    await showOnboardingForNewProfile();
     return;
   }
   hide($("onboarding"));
@@ -339,6 +338,55 @@ async function refresh() {
       const avatar = await ensureContactAvatar(c.user_id);
       setAvatarEl($("chat-avatar"), c.display_name, avatar);
     }
+  }
+}
+
+async function showOnboardingForNewProfile() {
+  show($("onboarding"));
+  hide($("app"));
+  try {
+    const status = await invoke("get_profile_status");
+    const restoreBtn = $("btn-restore-identity");
+    if (status?.identity_on_disk ?? status?.identityOnDisk) {
+      show(restoreBtn);
+      const uid = status?.user_id ?? status?.userId;
+      $("onboard-error").textContent = uid
+        ? `Найден сохранённый профиль @${uid}. Нажмите «Войти в существующий профиль».`
+        : "Найден сохранённый профиль на этом устройстве.";
+      show($("onboard-error"));
+    } else {
+      hide(restoreBtn);
+      hide($("onboard-error"));
+    }
+  } catch {
+    hide($("btn-restore-identity"));
+  }
+}
+
+async function showProfileRecovery(err) {
+  show($("onboarding"));
+  hide($("app"));
+  const errEl = $("onboard-error");
+  errEl.textContent = `Не удалось загрузить приложение: ${err}. Попробуйте войти в существующий профиль.`;
+  show(errEl);
+  try {
+    const status = await invoke("get_profile_status");
+    if (status?.identity_on_disk ?? status?.identityOnDisk) {
+      show($("btn-restore-identity"));
+    }
+  } catch {
+    hide($("btn-restore-identity"));
+  }
+}
+
+async function restoreExistingProfile() {
+  try {
+    await invoke("restore_identity");
+    hide($("onboard-error"));
+    await refresh();
+  } catch (e) {
+    $("onboard-error").textContent = `Не удалось войти: ${e}`;
+    show($("onboard-error"));
   }
 }
 
@@ -1119,13 +1167,25 @@ $("btn-create-identity").onclick = async () => {
   const userId = $("input-user-id").value.trim();
   const name = $("input-display-name").value.trim();
   if (!userId || !name) return alert("Заполните поля");
-  await invoke("create_identity", { userId, displayName: name });
-  if (pendingOnboardAvatar) {
-    await invoke("update_profile", { avatarDataUrl: pendingOnboardAvatar });
-    pendingOnboardAvatar = null;
+  try {
+    await invoke("create_identity", { userId, displayName: name });
+    if (pendingOnboardAvatar) {
+      await invoke("update_profile", { avatarDataUrl: pendingOnboardAvatar });
+      pendingOnboardAvatar = null;
+    }
+    hide($("onboard-error"));
+    await refresh();
+  } catch (e) {
+    $("onboard-error").textContent = String(e);
+    show($("onboard-error"));
+    try {
+      const status = await invoke("get_profile_status");
+      if (status?.identity_on_disk ?? status?.identityOnDisk) show($("btn-restore-identity"));
+    } catch { /* ignore */ }
   }
-  await refresh();
 };
+
+$("btn-restore-identity").onclick = () => restoreExistingProfile();
 
 $("search-contacts").oninput = renderContacts;
 $("btn-add-contact").onclick = () => {

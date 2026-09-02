@@ -85,6 +85,14 @@ pub struct ChatPreviewInfo {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct ProfileStatus {
+    pub data_dir: String,
+    pub identity_loaded: bool,
+    pub identity_on_disk: bool,
+    pub user_id: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub has_identity: bool,
     pub profile: Option<ProfileInfo>,
@@ -458,8 +466,8 @@ impl CorgigramApp {
     }
 
     pub fn snapshot(&self) -> Result<AppSnapshot> {
-        let unread_by_contact = self.storage.unread_counts_all()?;
-        let chat_previews = self.build_chat_previews()?;
+        let unread_by_contact = self.storage.unread_counts_all().unwrap_or_default();
+        let chat_previews = self.build_chat_previews().unwrap_or_default();
         Ok(AppSnapshot {
             has_identity: self.identity.is_some(),
             profile: self.profile_info(),
@@ -527,11 +535,41 @@ impl CorgigramApp {
     }
 
     pub fn create_identity(&mut self, user_id: &str, display_name: &str) -> Result<ProfileInfo> {
+        if self.identity.is_some() {
+            anyhow::bail!("профиль уже загружен");
+        }
+        let identity_path = self.data_dir.join("identity.json");
+        if identity_path.exists() {
+            anyhow::bail!(
+                "профиль уже сохранён на этом устройстве — нажмите «Войти в профиль», не создавайте новый (иначе потеряете доступ к старым чатам)"
+            );
+        }
         let user_id = normalize_user_id(user_id)?;
         let identity = Identity::generate(&user_id, display_name);
         self.save_identity(&identity)?;
         self.identity = Some(identity);
         self.profile_info().context("profile missing")
+    }
+
+    pub fn restore_identity(&mut self) -> Result<ProfileInfo> {
+        let path = self.data_dir.join("identity.json");
+        if !path.exists() {
+            anyhow::bail!("файл профиля не найден");
+        }
+        let json = std::fs::read_to_string(&path).context("read identity.json")?;
+        self.identity =
+            Some(Identity::load_json(&json).map_err(|e| anyhow::anyhow!("invalid identity: {e}"))?);
+        self.profile_info().context("profile missing")
+    }
+
+    pub fn profile_status(&self) -> ProfileStatus {
+        let path = self.data_dir.join("identity.json");
+        ProfileStatus {
+            data_dir: self.data_dir.display().to_string(),
+            identity_loaded: self.identity.is_some(),
+            identity_on_disk: path.exists(),
+            user_id: self.identity.as_ref().map(|id| id.public.user_id.clone()),
+        }
     }
 
     pub fn update_profile(
@@ -2482,6 +2520,20 @@ mod connect_tests {
         assert!(should_initiate_offer("alice", "bob"));
         assert!(!should_initiate_offer("bob", "alice"));
         assert!(should_initiate_offer("alice", "Alice"));
+    }
+
+    use super::CorgigramApp;
+
+    #[test]
+    fn user_data_profile_loads() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let path = std::path::PathBuf::from(home).join(".local/share/corgigram");
+        if !path.join("identity.json").exists() {
+            return;
+        }
+        let app = CorgigramApp::open(path).expect("open user data");
+        let snap = app.snapshot().expect("snapshot");
+        assert!(snap.has_identity, "identity.json exists but profile not loaded");
     }
 
     #[test]

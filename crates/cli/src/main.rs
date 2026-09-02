@@ -318,3 +318,4 @@ async fn cmd_demo(message: String) -> Result<()> {
     println!("Safety number: {}", bob_session.local().safety_number(bob_session.remote()));
     Ok(())
 }
+

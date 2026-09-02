@@ -7,7 +7,7 @@ use base64::Engine;
 use corgigram_core::{
     AppConfig, AppSnapshot, AttachmentData, BackgroundTickResult, ConnectAnswerResult,
     ConnectAutoResult, ConnectDiagnose, ConnectOfferResult, CorgigramApp, OutgoingAttachment,
-    ProfileInfo, SharedApp,
+    ProfileInfo, ProfileStatus, SharedApp,
 };
 use corgigram_storage::{ContactRecord, MessageRecord};
 use serde::Deserialize;
@@ -161,6 +161,23 @@ fn read_clipboard_text() -> Result<Option<String>, String> {
 #[tauri::command]
 async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     state.app.read().await.snapshot().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_profile_status(state: State<'_, AppState>) -> Result<ProfileStatus, String> {
+    Ok(state.app.read().await.profile_status())
+}
+
+#[tauri::command]
+async fn restore_identity(state: State<'_, AppState>) -> Result<ProfileInfo, String> {
+    let profile = state
+        .app
+        .write()
+        .await
+        .restore_identity()
+        .map_err(|e| e.to_string())?;
+    let _ = state.app.read().await.sync_directory().await;
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -755,6 +772,8 @@ pub fn run() {
         .manage(AppState { app: shared })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_profile_status,
+            restore_identity,
             mark_contact_read,
             get_contact_avatar,
             create_identity,

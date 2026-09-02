@@ -151,6 +151,28 @@ function msgContactId(m) {
   return m?.contact_id ?? m?.contactId ?? "";
 }
 
+function msgDirection(m) {
+  return m?.direction ?? "";
+}
+
+function msgDeletedAt(m) {
+  return m?.deleted_at ?? m?.deletedAt ?? null;
+}
+
+function msgKind(m) {
+  return m?.kind ?? "text";
+}
+
+function isOutgoingMessage(m, row) {
+  if (row?.classList.contains("out")) return true;
+  if (row?.classList.contains("in")) return false;
+  return msgDirection(m) === "out";
+}
+
+function isMessageDeleted(m) {
+  return msgKind(m) === "deleted" || !!msgDeletedAt(m);
+}
+
 function pendingStatusLabel() {
   return "ожидает прочтения";
 }
@@ -678,10 +700,13 @@ function ensureMessageContextMenu() {
   return messageContextMenu;
 }
 
-function showMessageContextMenu(x, y, m) {
+function showMessageContextMenu(x, y, m, row) {
   const menu = ensureMessageContextMenu();
   menu.innerHTML = "";
-  const canEditCaption = m.direction === "out" && (m.kind === "image" || m.kind === "file") && !m.deleted_at;
+  const outgoing = isOutgoingMessage(m, row);
+  const deleted = isMessageDeleted(m);
+  const kind = msgKind(m);
+  const canEditCaption = outgoing && (kind === "image" || kind === "file") && !deleted;
   if (canEditCaption) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -704,7 +729,7 @@ function showMessageContextMenu(x, y, m) {
     };
     menu.appendChild(btn);
   }
-  const canReplace = m.direction === "out" && (m.kind === "image" || m.kind === "file") && !m.deleted_at;
+  const canReplace = outgoing && (kind === "image" || kind === "file") && !deleted;
   if (canReplace) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -716,8 +741,8 @@ function showMessageContextMenu(x, y, m) {
     };
     menu.appendChild(btn);
   }
-  const canEdit = m.direction === "out" && m.kind === "text" && !m.deleted_at;
-  const canDelete = m.direction === "out" && !m.deleted_at;
+  const canEdit = outgoing && kind === "text" && !deleted;
+  const canDeleteForAll = outgoing && !deleted;
   if (canEdit) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -729,10 +754,10 @@ function showMessageContextMenu(x, y, m) {
     };
     menu.appendChild(btn);
   }
-  if (canDelete) {
+  if (canDeleteForAll) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = "Удалить";
+    btn.textContent = "Удалить у всех";
     btn.onclick = async (ev) => {
       ev.stopPropagation();
       hideMessageContextMenu();
@@ -787,7 +812,7 @@ function cancelEditMessage() {
 function attachMessageContextMenu(row, m) {
   row.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    showMessageContextMenu(e.clientX, e.clientY, m);
+    showMessageContextMenu(e.clientX, e.clientY, m, row);
   });
 }
 

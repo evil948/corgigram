@@ -11,10 +11,13 @@ pub enum ChatPayload {
     File {
         name: String,
         mime: String,
-        #[serde(with = "serde_bytes_b64")]
+        #[serde(with = "serde_bytes_b64", default = "default_empty_bytes")]
         data: Vec<u8>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
+        /// When true on edit, receiver keeps existing attachment bytes.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_attachment: bool,
     },
     #[serde(rename = "album")]
     Album {
@@ -30,6 +33,10 @@ pub struct AttachmentItem {
     pub mime: String,
     #[serde(with = "serde_bytes_b64")]
     pub data: Vec<u8>,
+}
+
+fn default_empty_bytes() -> Vec<u8> {
+    Vec::new()
 }
 
 mod serde_bytes_b64 {
@@ -88,6 +95,7 @@ mod tests {
             mime: "image/png".into(),
             data: vec![1, 2, 3],
             caption: Some("look".into()),
+            keep_attachment: false,
         };
         let bytes = payload.to_bytes().unwrap();
         let json = std::str::from_utf8(&bytes).unwrap();

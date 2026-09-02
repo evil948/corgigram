@@ -1,6 +1,7 @@
 mod app;
 mod chat_media;
 mod config;
+mod message_ops;
 mod push;
 pub mod signaling;
 pub mod turn;

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-replace-message-attachment"
+description = "Enables the replace_message_attachment command without any pre-configured scope."
+commands.allow = ["replace_message_attachment"]
+
+[[permission]]
+identifier = "deny-replace-message-attachment"
+description = "Denies the replace_message_attachment command without any pre-configured scope."
+commands.deny = ["replace_message_attachment"]

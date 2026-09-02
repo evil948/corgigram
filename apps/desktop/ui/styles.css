@@ -887,6 +887,51 @@ input.readonly { opacity: 0.65; cursor: default; }
 
 .bubble-text { white-space: pre-wrap; }
 
+.msg-edited {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  opacity: 0.72;
+  font-style: italic;
+}
+
+.msg-row.msg-deleted .bubble {
+  opacity: 0.72;
+  font-style: italic;
+}
+
+.msg-row.msg-deleted .bubble-text {
+  color: var(--text-muted, #8a8a8a);
+}
+
+.message-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 168px;
+  padding: 0.35rem;
+  border-radius: 12px;
+  background: var(--surface-elevated, #fff);
+  border: 1px solid var(--border-subtle, rgba(0,0,0,0.08));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+}
+
+.message-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.message-context-menu button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 .bubble-media {
   border-radius: 14px;
   overflow: hidden;

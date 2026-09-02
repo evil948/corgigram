@@ -146,6 +146,41 @@ pub async fn send_message(contact_id: String, text: String) -> Result<MessageDto
 }
 
 #[frb]
+pub async fn edit_message(
+    contact_id: String,
+    message_id: String,
+    text: String,
+) -> Result<MessageDto, String> {
+    app()?
+        .lock()
+        .await
+        .edit_message(&contact_id, &message_id, &text)
+        .await
+        .map(MessageDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[frb]
+pub async fn delete_message(contact_id: String, message_id: String) -> Result<MessageDto, String> {
+    app()?
+        .lock()
+        .await
+        .delete_message(&contact_id, &message_id)
+        .await
+        .map(MessageDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[frb]
+pub async fn hide_message_for_me(message_id: String) -> Result<(), String> {
+    app()?
+        .lock()
+        .await
+        .hide_message_for_me(&message_id)
+        .map_err(|e| e.to_string())
+}
+
+#[frb]
 pub async fn poll_incoming() -> Result<Vec<MessageDto>, String> {
     app()?
         .lock()

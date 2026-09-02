@@ -36,13 +36,21 @@ pub struct MessageRecord {
     pub body: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
-    /// text | image | file | album
+    /// text | image | file | album | deleted
     #[serde(default = "default_kind")]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub revision: u32,
+    #[serde(default)]
+    pub hidden_locally: bool,
 }
 
 fn default_kind() -> String {
@@ -100,6 +108,23 @@ impl Storage {
         );
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachment_name TEXT", []);
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachment_mime TEXT", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN edited_at TEXT", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN deleted_at TEXT", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN revision INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN hidden_locally INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS message_events (
+                event_id TEXT PRIMARY KEY,
+                target_id TEXT NOT NULL,
+                op TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            ",
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -191,11 +216,61 @@ impl Storage {
         Ok(count > 0)
     }
 
+    pub fn event_exists(&self, event_id: &str) -> Result<bool, StorageError> {
+        let conn = self.conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM message_events WHERE event_id = ?1",
+            params![event_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn insert_message_event(
+        &self,
+        event_id: &str,
+        target_id: &str,
+        op: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO message_events(event_id, target_id, op, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![event_id, target_id, op, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_message(&self, id: &str) -> Result<Option<MessageRecord>, StorageError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                    edited_at, deleted_at, revision, hidden_locally
+             FROM messages WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_message_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn hide_message_locally(&self, id: &str) -> Result<bool, StorageError> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE messages SET hidden_locally = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn insert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                                  edited_at, deleted_at, revision, hidden_locally)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 message.id,
                 message.contact_id,
@@ -206,6 +281,10 @@ impl Storage {
                 message.kind,
                 message.attachment_name,
                 message.attachment_mime,
+                message.edited_at.map(|t| t.to_rfc3339()),
+                message.deleted_at.map(|t| t.to_rfc3339()),
+                message.revision,
+                message.hidden_locally as i32,
             ],
         )?;
         Ok(())
@@ -214,14 +293,19 @@ impl Storage {
     pub fn upsert_message(&self, message: &MessageRecord) -> Result<(), StorageError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO messages(id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                                  edited_at, deleted_at, revision, hidden_locally)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET
                body = excluded.body,
                status = excluded.status,
                kind = excluded.kind,
                attachment_name = excluded.attachment_name,
-               attachment_mime = excluded.attachment_mime",
+               attachment_mime = excluded.attachment_mime,
+               edited_at = excluded.edited_at,
+               deleted_at = excluded.deleted_at,
+               revision = excluded.revision,
+               hidden_locally = excluded.hidden_locally",
             params![
                 message.id,
                 message.contact_id,
@@ -232,6 +316,10 @@ impl Storage {
                 message.kind,
                 message.attachment_name,
                 message.attachment_mime,
+                message.edited_at.map(|t| t.to_rfc3339()),
+                message.deleted_at.map(|t| t.to_rfc3339()),
+                message.revision,
+                message.hidden_locally as i32,
             ],
         )?;
         Ok(())
@@ -270,7 +358,8 @@ impl Storage {
     pub fn list_outbound_by_status(&self, status: &str) -> Result<Vec<MessageRecord>, StorageError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
+            "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                    edited_at, deleted_at, revision, hidden_locally
              FROM messages WHERE direction = 'out' AND status = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![status], map_message_row)?;
@@ -291,16 +380,18 @@ impl Storage {
         let limit = limit.min(500) as i64;
         let rows = if let Some(before) = before_created_at {
             let mut stmt = conn.prepare(
-                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
-                 FROM messages WHERE contact_id = ?1 AND created_at < ?2
+                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                        edited_at, deleted_at, revision, hidden_locally
+                 FROM messages WHERE contact_id = ?1 AND hidden_locally = 0 AND created_at < ?2
                  ORDER BY created_at DESC LIMIT ?3",
             )?;
             let mapped = stmt.query_map(params![contact_id, before, limit], map_message_row)?;
             mapped.collect::<Result<Vec<_>, _>>()?
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime
-                 FROM messages WHERE contact_id = ?1
+                "SELECT id, contact_id, direction, body, status, created_at, kind, attachment_name, attachment_mime,
+                        edited_at, deleted_at, revision, hidden_locally
+                 FROM messages WHERE contact_id = ?1 AND hidden_locally = 0
                  ORDER BY created_at DESC LIMIT ?2",
             )?;
             let mapped = stmt.query_map(params![contact_id, limit], map_message_row)?;
@@ -484,6 +575,10 @@ mod tests {
             kind: "text".into(),
             attachment_name: None,
             attachment_mime: None,
+            edited_at: None,
+            deleted_at: None,
+            revision: 0,
+            hidden_locally: false,
         }
     }
 
@@ -563,6 +658,8 @@ mod tests {
 
 fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
     let created_at: String = row.get(5)?;
+    let edited_at: Option<String> = row.get(9)?;
+    let deleted_at: Option<String> = row.get(10)?;
     Ok(MessageRecord {
         id: row.get(0)?,
         contact_id: row.get(1)?,
@@ -573,5 +670,9 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
         kind: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "text".into()),
         attachment_name: row.get(7)?,
         attachment_mime: row.get(8)?,
+        edited_at: edited_at.and_then(|value| value.parse().ok()),
+        deleted_at: deleted_at.and_then(|value| value.parse().ok()),
+        revision: row.get::<_, Option<i64>>(11)?.unwrap_or(0) as u32,
+        hidden_locally: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
     })
 }

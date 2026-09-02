@@ -9,6 +9,7 @@ let pendingProfileAvatar = null;
 let profileRemoveAvatar = false;
 let pendingAttachments = [];
 let sendInFlight = false;
+let editingMessageId = null;
 const avatarCache = new Map();
 let refreshTimer = null;
 let loadingOlder = false;
@@ -66,6 +67,46 @@ function setAvatarEl(el, name, dataUrl) {
   } else {
     el.textContent = initials(name);
   }
+}
+
+async function replaceMessageAttachment(messageId) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const dataBase64 = await readFileAsBase64(file);
+      const updated = await invoke("replace_message_attachment", {
+        contactId: activeContactId,
+        messageId,
+        attachment: {
+          name: file.name,
+          mime: file.type || "application/octet-stream",
+          dataBase64,
+        },
+      });
+      removeMessageRow(messageId);
+      appendMessage(updated);
+      debouncedRefresh();
+    } catch (err) {
+      alert("Не удалось заменить файл: " + err);
+    }
+  };
+  input.click();
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function readImageFile(file) {
@@ -530,7 +571,7 @@ async function syncActiveChatMessages() {
   const existing = new Set([...box.querySelectorAll(".msg-row")].map(r => r.dataset.msgId));
   for (const m of msgs) {
     if (existing.has(m.id)) {
-      updateMessageStatus(m.id, m.status);
+      updateMessageRecord(m);
     } else {
       appendMessage(m);
     }
@@ -545,6 +586,209 @@ function updateMessageStatus(msgId, status) {
   if (!timeEl) return;
   const base = timeEl.textContent.split(" · ")[0];
   timeEl.textContent = pending ? `${base} · ${pendingStatusLabel()}` : base;
+}
+
+function applyDeletedAppearance(row, m) {
+  row.classList.add("msg-deleted");
+  const bubble = row.querySelector(".bubble");
+  if (!bubble) return;
+  bubble.querySelector(".bubble-media")?.remove();
+  bubble.querySelector(".bubble-file")?.remove();
+  bubble.querySelector(".bubble-caption")?.remove();
+  let textEl = bubble.querySelector(".bubble-text");
+  if (!textEl) {
+    textEl = document.createElement("div");
+    textEl.className = "bubble-text";
+    bubble.appendChild(textEl);
+  }
+  textEl.textContent = m.body || "Сообщение удалено";
+  bubble.querySelector(".msg-edited")?.remove();
+}
+
+function updateMessageRecord(m) {
+  const row = $("messages").querySelector(`.msg-row[data-msg-id="${m.id}"]`);
+  if (!row) return false;
+  if (m.kind === "deleted" || m.deleted_at) {
+    applyDeletedAppearance(row, m);
+    updateMessageStatus(m.id, m.status);
+    return true;
+  }
+  row.classList.remove("msg-deleted");
+  const bubble = row.querySelector(".bubble");
+  if (!bubble) return true;
+  const kind = m.kind || "text";
+  if (kind === "text") {
+    let textEl = bubble.querySelector(".bubble-text");
+    if (!textEl) {
+      textEl = document.createElement("div");
+      textEl.className = "bubble-text";
+      bubble.appendChild(textEl);
+    }
+    textEl.textContent = m.body;
+  } else {
+    const cap = bubble.querySelector(".bubble-caption");
+    const caption = mediaCaptionText(m);
+    if (caption) {
+      if (cap) cap.textContent = caption;
+      else {
+        const capEl = document.createElement("div");
+        capEl.className = "bubble-caption";
+        capEl.textContent = caption;
+        bubble.prepend(capEl);
+      }
+    } else if (cap) {
+      cap.remove();
+    }
+  }
+  let edited = bubble.querySelector(".msg-edited");
+  if (m.edited_at) {
+    if (!edited) {
+      edited = document.createElement("span");
+      edited.className = "msg-edited";
+      edited.textContent = "изменено";
+      bubble.appendChild(edited);
+    }
+  } else if (edited) {
+    edited.remove();
+  }
+  updateMessageStatus(m.id, m.status);
+  return true;
+}
+
+function removeMessageRow(msgId) {
+  $("messages").querySelector(`.msg-row[data-msg-id="${msgId}"]`)?.remove();
+}
+
+let messageContextMenu = null;
+
+function hideMessageContextMenu() {
+  messageContextMenu?.classList.add("hidden");
+}
+
+function ensureMessageContextMenu() {
+  if (messageContextMenu) return messageContextMenu;
+  messageContextMenu = document.createElement("div");
+  messageContextMenu.id = "message-context-menu";
+  messageContextMenu.className = "message-context-menu hidden";
+  document.body.appendChild(messageContextMenu);
+  document.addEventListener("click", hideMessageContextMenu);
+  document.addEventListener("contextmenu", (e) => {
+    if (!messageContextMenu?.contains(e.target)) hideMessageContextMenu();
+  });
+  return messageContextMenu;
+}
+
+function showMessageContextMenu(x, y, m) {
+  const menu = ensureMessageContextMenu();
+  menu.innerHTML = "";
+  const canEditCaption = m.direction === "out" && (m.kind === "image" || m.kind === "file") && !m.deleted_at;
+  if (canEditCaption) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Изменить подпись";
+    btn.onclick = async (ev) => {
+      ev.stopPropagation();
+      hideMessageContextMenu();
+      const next = prompt("Подпись к файлу", mediaCaptionText(m) || "");
+      if (next === null) return;
+      try {
+        const updated = await invoke("edit_message_caption", {
+          contactId: activeContactId,
+          messageId: m.id,
+          caption: next.trim() || null,
+        });
+        updateMessageRecord(updated);
+      } catch (err) {
+        alert("Не удалось изменить подпись: " + err);
+      }
+    };
+    menu.appendChild(btn);
+  }
+  const canReplace = m.direction === "out" && (m.kind === "image" || m.kind === "file") && !m.deleted_at;
+  if (canReplace) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Заменить файл";
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      hideMessageContextMenu();
+      replaceMessageAttachment(m.id);
+    };
+    menu.appendChild(btn);
+  }
+  const canEdit = m.direction === "out" && m.kind === "text" && !m.deleted_at;
+  const canDelete = m.direction === "out" && !m.deleted_at;
+  if (canEdit) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Редактировать";
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      hideMessageContextMenu();
+      startEditMessage(m);
+    };
+    menu.appendChild(btn);
+  }
+  if (canDelete) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Удалить";
+    btn.onclick = async (ev) => {
+      ev.stopPropagation();
+      hideMessageContextMenu();
+      if (!confirm("Удалить сообщение у всех?")) return;
+      try {
+        const updated = await invoke("delete_message", {
+          contactId: activeContactId,
+          messageId: m.id,
+        });
+        updateMessageRecord(updated);
+      } catch (err) {
+        alert("Не удалось удалить: " + err);
+      }
+    };
+    menu.appendChild(btn);
+  }
+  const hideBtn = document.createElement("button");
+  hideBtn.type = "button";
+  hideBtn.textContent = "Удалить у меня";
+  hideBtn.onclick = async (ev) => {
+    ev.stopPropagation();
+    hideMessageContextMenu();
+    try {
+      await invoke("hide_message_for_me", { messageId: m.id });
+      removeMessageRow(m.id);
+    } catch (err) {
+      alert("Не удалось скрыть: " + err);
+    }
+  };
+  menu.appendChild(hideBtn);
+  if (!menu.children.length) return;
+  menu.classList.remove("hidden");
+  menu.style.left = `${Math.min(x, window.innerWidth - 200)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+}
+
+function startEditMessage(m) {
+  editingMessageId = m.id;
+  const input = $("message-input");
+  input.value = m.body;
+  input.placeholder = "Редактирование… Enter — сохранить, Esc — отмена";
+  input.focus();
+}
+
+function cancelEditMessage() {
+  editingMessageId = null;
+  const input = $("message-input");
+  input.value = "";
+  input.placeholder = "Напишите сообщение…";
+}
+
+function attachMessageContextMenu(row, m) {
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    showMessageContextMenu(e.clientX, e.clientY, m);
+  });
 }
 
 function formatDateLabel(iso) {
@@ -755,7 +999,29 @@ async function loadMessageMedia(m, container) {
 function appendMessage(m, scroll = true, prepend = false) {
   const box = $("messages");
   if (box.querySelector(`.msg-row[data-msg-id="${m.id}"]`)) {
-    updateMessageStatus(m.id, m.status);
+    updateMessageRecord(m);
+    return;
+  }
+  if (m.kind === "deleted" || m.deleted_at) {
+    ensureDateSeparator(box, m.created_at);
+    const row = document.createElement("div");
+    row.className = `msg-row ${m.direction === "out" ? "out" : "in"} msg-deleted`;
+    row.dataset.msgId = m.id;
+    row.dataset.createdAt = m.created_at;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const inner = document.createElement("div");
+    inner.appendChild(bubble);
+    const timeEl = document.createElement("div");
+    timeEl.className = "msg-time";
+    timeEl.textContent = formatTime(m.created_at);
+    inner.appendChild(timeEl);
+    row.appendChild(inner);
+    applyDeletedAppearance(row, m);
+    attachMessageContextMenu(row, m);
+    if (prepend) box.prepend(row);
+    else box.appendChild(row);
+    if (scroll) box.scrollTop = box.scrollHeight;
     return;
   }
   ensureDateSeparator(box, m.created_at);
@@ -800,7 +1066,14 @@ function appendMessage(m, scroll = true, prepend = false) {
     text.className = "bubble-text";
     text.textContent = m.body;
     bubble.appendChild(text);
+    if (m.edited_at) {
+      const edited = document.createElement("span");
+      edited.className = "msg-edited";
+      edited.textContent = "изменено";
+      bubble.appendChild(edited);
+    }
   }
+  attachMessageContextMenu(row, m);
   if (scroll) box.scrollTop = box.scrollHeight;
 }
 
@@ -1194,6 +1467,11 @@ $("new-messages-pill")?.addEventListener("click", () => { void scrollChatToBotto
 
 $("btn-send").onclick = sendCurrentMessage;
 $("message-input").onkeydown = (e) => {
+  if (e.key === "Escape" && editingMessageId) {
+    e.preventDefault();
+    cancelEditMessage();
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendCurrentMessage();
@@ -1203,6 +1481,25 @@ $("message-input").onkeydown = (e) => {
 async function sendCurrentMessage() {
   const text = $("message-input").value.trim();
   if (!activeContactId || sendInFlight) return;
+  if (editingMessageId) {
+    if (!text) return alert("Введите текст");
+    setSendInFlight(true);
+    try {
+      const msg = await invoke("edit_message", {
+        contactId: activeContactId,
+        messageId: editingMessageId,
+        text,
+      });
+      updateMessageRecord(msg);
+      cancelEditMessage();
+      debouncedRefresh();
+    } catch (e) {
+      alert("Не удалось изменить: " + e);
+    } finally {
+      setSendInFlight(false);
+    }
+    return;
+  }
   if (!text && !pendingAttachments.length) return;
   setSendInFlight(true);
   try {
@@ -1291,6 +1588,28 @@ $("modal-settings")?.addEventListener("show", () => setAppSurface("settings"));
 
 listen("message-received", (e) => {
   handleIncomingMessage(e.payload);
+});
+listen("message-updated", (e) => {
+  const msg = e.payload;
+  if (!msg) return;
+  if (msgContactId(msg) === activeContactId) {
+    if (!updateMessageRecord(msg)) appendMessage(msg, false);
+    refreshChatStatus(true);
+  }
+  debouncedRefresh();
+});
+listen("message-deleted", (e) => {
+  const msg = e.payload;
+  if (!msg) return;
+  if (msgContactId(msg) === activeContactId) {
+    if (!updateMessageRecord(msg)) appendMessage(msg, false);
+    refreshChatStatus(true);
+  }
+  debouncedRefresh();
+});
+listen("message-hidden", (e) => {
+  const id = e.payload?.id;
+  if (id) removeMessageRow(id);
 });
 listen("messages-updated", () => {
   debouncedRefresh();

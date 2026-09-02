@@ -11,7 +11,7 @@ use corgigram_crypto::{
     decrypt_avatar, decrypt_mailbox, encrypt_avatar, encrypt_mailbox, Identity, PreKeyBundle,
     Session, SessionInitiator, SessionResponder,
 };
-use corgigram_protocol::{ChatPayload, WireMessage};
+use corgigram_protocol::{ChatEnvelope, ChatPayload, WireMessage};
 use corgigram_storage::{ContactRecord, MessageRecord, OutboxRecord, Storage};
 use corgigram_transport::{run_answerer_role, run_offerer_role, IceConfig, PeerConnection};
 use qrcode::QrCode;
@@ -19,10 +19,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::chat_media::{
-    self, bytes_to_payload, message_record_from_payload, payload_to_bytes,
-    prefers_mailbox_delivery, save_payload_attachments,
+    self, bytes_to_payload, media_caption_from_record, media_edit_payload,
+    message_record_from_payload, prefers_mailbox_delivery, save_payload_attachments,
+    save_payload_attachments_if_needed,
 };
 use crate::config::AppConfig;
+use crate::message_ops::{apply_incoming_envelope, bytes_to_envelope, envelope_to_bytes, DELETED_BODY};
 use crate::signaling::{FirebaseSignaling, MailboxEntry};
 use crate::turn::fetch_elixir_webrtc_turn;
 
@@ -1640,20 +1642,209 @@ impl CorgigramApp {
         self.send_payload(contact_id, &payload).await
     }
 
+    pub async fn edit_message(
+        &self,
+        contact_id: &str,
+        message_id: &str,
+        new_text: &str,
+    ) -> Result<MessageRecord> {
+        let body = new_text.trim();
+        if body.is_empty() {
+            anyhow::bail!("пустое сообщение");
+        }
+        let mut record = self
+            .storage
+            .get_message(message_id)?
+            .context("message not found")?;
+        if record.contact_id != contact_id {
+            anyhow::bail!("wrong contact");
+        }
+        if record.direction != "out" {
+            anyhow::bail!("can only edit own messages");
+        }
+        if record.deleted_at.is_some() {
+            anyhow::bail!("message deleted");
+        }
+        if record.kind != "text" {
+            anyhow::bail!("only text messages can be edited");
+        }
+        let payload = ChatPayload::Text {
+            body: body.to_string(),
+        };
+        let event_id = Storage::new_message_id();
+        let envelope = ChatEnvelope::edit(&event_id, message_id, payload);
+        record.body = body.to_string();
+        record.edited_at = Some(envelope.ts);
+        record.revision = record.revision.saturating_add(1);
+        self.storage.upsert_message(&record)?;
+        self.send_envelope(contact_id, envelope, record.clone(), false)
+            .await
+    }
+
+    pub async fn delete_message(&self, contact_id: &str, message_id: &str) -> Result<MessageRecord> {
+        let mut record = self
+            .storage
+            .get_message(message_id)?
+            .context("message not found")?;
+        if record.contact_id != contact_id {
+            anyhow::bail!("wrong contact");
+        }
+        if record.direction != "out" {
+            anyhow::bail!("can only delete own messages");
+        }
+        if record.deleted_at.is_some() {
+            return Ok(record);
+        }
+        let event_id = Storage::new_message_id();
+        let envelope = ChatEnvelope::delete(&event_id, message_id);
+        record.body = DELETED_BODY.into();
+        record.kind = "deleted".into();
+        record.attachment_name = None;
+        record.attachment_mime = None;
+        record.deleted_at = Some(envelope.ts);
+        record.revision = record.revision.saturating_add(1);
+        self.storage.upsert_message(&record)?;
+        self.send_envelope(contact_id, envelope, record.clone(), false)
+            .await
+    }
+
+    pub async fn edit_message_caption(
+        &self,
+        contact_id: &str,
+        message_id: &str,
+        caption: Option<&str>,
+    ) -> Result<MessageRecord> {
+        let record = self
+            .storage
+            .get_message(message_id)?
+            .context("message not found")?;
+        if record.contact_id != contact_id {
+            anyhow::bail!("wrong contact");
+        }
+        if record.direction != "out" {
+            anyhow::bail!("can only edit own messages");
+        }
+        if record.deleted_at.is_some() {
+            anyhow::bail!("message deleted");
+        }
+        let payload = media_edit_payload(&record, caption)?;
+        self.apply_outgoing_edit(contact_id, message_id, payload).await
+    }
+
+    pub async fn replace_message_attachment(
+        &self,
+        contact_id: &str,
+        message_id: &str,
+        attachment: OutgoingAttachment,
+    ) -> Result<MessageRecord> {
+        attachment.validate()?;
+        let record = self
+            .storage
+            .get_message(message_id)?
+            .context("message not found")?;
+        if record.contact_id != contact_id {
+            anyhow::bail!("wrong contact");
+        }
+        if record.direction != "out" {
+            anyhow::bail!("can only edit own messages");
+        }
+        if record.deleted_at.is_some() {
+            anyhow::bail!("message deleted");
+        }
+        if !matches!(record.kind.as_str(), "image" | "file") {
+            anyhow::bail!("only single attachments can be replaced");
+        }
+        let caption = media_caption_from_record(&record);
+        let payload = ChatPayload::File {
+            name: attachment.name,
+            mime: attachment.mime,
+            data: attachment.data,
+            caption,
+            keep_attachment: false,
+        };
+        self.apply_outgoing_edit(contact_id, message_id, payload).await
+    }
+
+    async fn apply_outgoing_edit(
+        &self,
+        contact_id: &str,
+        message_id: &str,
+        payload: ChatPayload,
+    ) -> Result<MessageRecord> {
+        let existing = self
+            .storage
+            .get_message(message_id)?
+            .context("message not found")?;
+        let event_id = Storage::new_message_id();
+        let envelope = ChatEnvelope::edit(&event_id, message_id, payload.clone());
+        save_payload_attachments_if_needed(&self.data_dir, message_id, &payload)?;
+        let mut record = message_record_from_payload(
+            message_id,
+            contact_id,
+            existing.direction.as_str(),
+            existing.status.as_str(),
+            &payload,
+        );
+        record.created_at = existing.created_at;
+        record.edited_at = Some(envelope.ts);
+        record.revision = existing.revision.saturating_add(1);
+        self.storage.upsert_message(&record)?;
+        self.send_envelope(contact_id, envelope, record.clone(), false)
+            .await
+    }
+
+    pub fn hide_message_for_me(&self, message_id: &str) -> Result<()> {
+        if !self.storage.hide_message_locally(message_id)? {
+            anyhow::bail!("message not found");
+        }
+        Ok(())
+    }
+
     async fn send_payload(
         &self,
         contact_id: &str,
         payload: &ChatPayload,
     ) -> Result<MessageRecord> {
         let msg_id = Storage::new_message_id();
-        let plain = payload_to_bytes(payload)?;
+        let envelope = ChatEnvelope::create(&msg_id, payload.clone());
         save_payload_attachments(&self.data_dir, &msg_id, payload)?;
         let record =
             message_record_from_payload(&msg_id, contact_id, "out", "pending", payload);
+        self.send_envelope(contact_id, envelope, record, true).await
+    }
 
-        if !prefers_mailbox_delivery(payload, plain.len()) {
+    async fn send_envelope(
+        &self,
+        contact_id: &str,
+        envelope: ChatEnvelope,
+        local_record: MessageRecord,
+        track_delivery_status: bool,
+    ) -> Result<MessageRecord> {
+        let plain = envelope_to_bytes(&envelope)?;
+        let wire_id = envelope.id.clone();
+        if let Some(ref payload) = envelope.payload {
+            save_payload_attachments_if_needed(
+                &self.data_dir,
+                envelope.message_id(),
+                payload,
+            )?;
+        }
+
+        let prefer_mailbox = envelope
+            .payload
+            .as_ref()
+            .map(|payload| prefers_mailbox_delivery(payload, plain.len()))
+            .unwrap_or(false);
+
+        if !prefer_mailbox {
             match self
-                .try_send_payload_bytes(contact_id, &plain, &msg_id, &record)
+                .try_send_envelope_bytes(
+                    contact_id,
+                    &plain,
+                    &wire_id,
+                    &local_record,
+                    track_delivery_status,
+                )
                 .await
             {
                 Ok(Some(sent)) => return Ok(sent),
@@ -1664,20 +1855,30 @@ impl CorgigramApp {
             }
         }
 
-        self.queue_offline_payload(contact_id, &plain, &record).await
+        self.queue_offline_envelope(
+            contact_id,
+            &plain,
+            &wire_id,
+            &local_record,
+            track_delivery_status,
+        )
+        .await
     }
 
-    async fn try_send_payload_bytes(
+    async fn try_send_envelope_bytes(
         &self,
         contact_id: &str,
         plain: &[u8],
-        msg_id: &str,
+        wire_id: &str,
         display: &MessageRecord,
+        track_delivery_status: bool,
     ) -> Result<Option<MessageRecord>> {
-        if matches!(
-            self.storage.get_message_status(msg_id)?,
-            Some(status) if status == "queued_mailbox"
-        ) {
+        if track_delivery_status
+            && matches!(
+                self.storage.get_message_status(wire_id)?,
+                Some(status) if status == "queued_mailbox"
+            )
+        {
             return Ok(None);
         }
 
@@ -1698,32 +1899,33 @@ impl CorgigramApp {
             return Err(error);
         }
 
+        if !track_delivery_status {
+            return Ok(Some(display.clone()));
+        }
+
         let mut record = display.clone();
-        record.id = msg_id.to_string();
         record.status = "sent".into();
         self.storage.upsert_message(&record)?;
         Ok(Some(record))
     }
 
-    fn ingest_incoming_plain(
+    fn ingest_incoming_bytes(
         &self,
-        msg_id: &str,
+        fallback_id: &str,
         contact_id: &str,
         plain: &[u8],
     ) -> Result<MessageRecord> {
-        let payload = bytes_to_payload(plain);
-        save_payload_attachments(&self.data_dir, msg_id, &payload)?;
-        let record =
-            message_record_from_payload(msg_id, contact_id, "in", "delivered", &payload);
-        self.storage.upsert_message(&record)?;
-        Ok(record)
+        let envelope = bytes_to_envelope(plain, fallback_id);
+        apply_incoming_envelope(&self.storage, &self.data_dir, contact_id, &envelope)
     }
 
-    async fn queue_offline_payload(
+    async fn queue_offline_envelope(
         &self,
         contact_id: &str,
         plain: &[u8],
+        wire_id: &str,
         record: &MessageRecord,
+        track_delivery_status: bool,
     ) -> Result<MessageRecord> {
         let identity = self.identity.as_ref().context("no identity")?.clone();
         let contact = self
@@ -1737,32 +1939,36 @@ impl CorgigramApp {
 
         if self.config.firebase_configured() {
             let fb = self.firebase()?;
-            fb.publish_mailbox(contact_id, &record.id, &me, &ciphertext)
+            fb.publish_mailbox(contact_id, wire_id, &me, &ciphertext)
                 .await?;
-            fb.publish_mailbox_ping(contact_id, &me, &record.id)
-                .await
-                .ok();
-            let queued = MessageRecord {
-                status: "queued_mailbox".into(),
-                ..record.clone()
-            };
-            self.storage.upsert_message(&queued)?;
-            return Ok(queued);
+            fb.publish_mailbox_ping(contact_id, &me, wire_id).await.ok();
+            if track_delivery_status {
+                let queued = MessageRecord {
+                    status: "queued_mailbox".into(),
+                    ..record.clone()
+                };
+                self.storage.upsert_message(&queued)?;
+                return Ok(queued);
+            }
+            return Ok(record.clone());
         }
 
         self.storage.insert_outbox(&OutboxRecord {
-            id: record.id.clone(),
+            id: wire_id.to_string(),
             contact_id: contact_id.to_string(),
             body: payload_b64,
             status: "queued_local".into(),
             created_at: record.created_at,
         })?;
-        let queued = MessageRecord {
-            status: "queued_local".into(),
-            ..record.clone()
-        };
-        self.storage.upsert_message(&queued)?;
-        Ok(queued)
+        if track_delivery_status {
+            let queued = MessageRecord {
+                status: "queued_local".into(),
+                ..record.clone()
+            };
+            self.storage.upsert_message(&queued)?;
+            return Ok(queued);
+        }
+        Ok(record.clone())
     }
 
     async fn decrypt_mailbox_for_contact(
@@ -1821,7 +2027,7 @@ impl CorgigramApp {
             Ok(plain) => plain,
             Err(_) => return Ok(None),
         };
-        let record = self.ingest_incoming_plain(msg_id, &entry.from, &plain)?;
+        let record = self.ingest_incoming_bytes(msg_id, &entry.from, &plain)?;
         fb.delete_mailbox(me, msg_id).await.ok();
         self.publish_mailbox_delivery_ack(fb, &entry.from, msg_id, me)
             .await;
@@ -1872,27 +2078,45 @@ impl CorgigramApp {
             let plain = base64::engine::general_purpose::STANDARD
                 .decode(&item.body)
                 .unwrap_or_else(|_| item.body.as_bytes().to_vec());
-            let payload = bytes_to_payload(&plain);
+            let envelope = bytes_to_envelope(&plain, &item.id);
+            let payload = envelope
+                .payload
+                .clone()
+                .unwrap_or_else(|| bytes_to_payload(&plain));
             if prefers_mailbox_delivery(&payload, plain.len()) {
                 continue;
             }
-            let display = message_record_from_payload(
-                &item.id,
-                &item.contact_id,
-                "out",
-                "pending",
-                &payload,
-            );
+            let msg_id = envelope.message_id();
+            let display = self
+                .storage
+                .get_message(msg_id)?
+                .unwrap_or_else(|| {
+                    message_record_from_payload(
+                        msg_id,
+                        &item.contact_id,
+                        "out",
+                        "pending",
+                        &payload,
+                    )
+                });
             if self
-                .try_send_payload_bytes(&item.contact_id, &plain, &item.id, &display)
+                .try_send_envelope_bytes(
+                    &item.contact_id,
+                    &plain,
+                    &item.id,
+                    &display,
+                    envelope.op == corgigram_protocol::MessageOp::Create,
+                )
                 .await?
                 .is_some()
             {
-                if !matches!(
-                    self.storage.get_message_status(&item.id)?,
-                    Some(status) if status == "queued_mailbox"
-                ) {
-                    self.storage.update_message_status(&item.id, "sent")?;
+                if envelope.op == corgigram_protocol::MessageOp::Create
+                    && !matches!(
+                        self.storage.get_message_status(msg_id)?,
+                        Some(status) if status == "queued_mailbox"
+                    )
+                {
+                    self.storage.update_message_status(msg_id, "sent")?;
                 }
                 self.storage.delete_outbox(&item.id)?;
             }
@@ -2001,9 +2225,11 @@ impl CorgigramApp {
                         WireMessage::from_bytes(&bytes)?
                     {
                         let plain = active.session.decrypt(&ciphertext)?;
-                        let msg_id = Storage::new_message_id();
-                        let record =
-                            self.ingest_incoming_plain(&msg_id, &active.contact_id, &plain)?;
+                        let record = self.ingest_incoming_bytes(
+                            &Storage::new_message_id(),
+                            &active.contact_id,
+                            &plain,
+                        )?;
                         received.push(record);
                     }
                 }

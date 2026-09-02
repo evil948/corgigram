@@ -34,6 +34,12 @@ pub struct MessageDto {
     pub attachment_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub revision: u32,
 }
 
 fn default_kind() -> String {
@@ -125,6 +131,9 @@ impl From<MessageRecord> for MessageDto {
             kind: m.kind,
             attachment_name: m.attachment_name,
             attachment_mime: m.attachment_mime,
+            edited_at: m.edited_at.map(|value| value.to_rfc3339()),
+            deleted_at: m.deleted_at.map(|value| value.to_rfc3339()),
+            revision: m.revision,
         }
     }
 }

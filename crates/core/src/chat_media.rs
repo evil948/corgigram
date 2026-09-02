@@ -71,6 +71,7 @@ pub fn build_payload(text: Option<&str>, attachments: &[OutgoingAttachment]) -> 
             mime: attachment.mime.clone(),
             data: attachment.data.clone(),
             caption,
+            keep_attachment: false,
         });
     }
     Ok(ChatPayload::Album {
@@ -159,13 +160,26 @@ pub fn message_record_from_payload(
         kind,
         attachment_name,
         attachment_mime,
+        edited_at: None,
+        deleted_at: None,
+        revision: 0,
+        hidden_locally: false,
     }
 }
 
 pub fn save_payload_attachments(data_dir: &Path, msg_id: &str, payload: &ChatPayload) -> Result<()> {
     match payload {
         ChatPayload::Text { .. } => Ok(()),
-        ChatPayload::File { name, mime, data, .. } => {
+        ChatPayload::File {
+            name,
+            mime,
+            data,
+            keep_attachment,
+            ..
+        } => {
+            if *keep_attachment || data.is_empty() {
+                return Ok(());
+            }
             write_attachment_files(
                 data_dir,
                 msg_id,
@@ -187,6 +201,48 @@ pub fn save_payload_attachments(data_dir: &Path, msg_id: &str, payload: &ChatPay
             let blobs = items.iter().map(|item| item.data.as_slice()).collect::<Vec<_>>();
             write_attachment_files(data_dir, msg_id, &metas, &blobs)
         }
+    }
+}
+
+pub fn save_payload_attachments_if_needed(
+    data_dir: &Path,
+    msg_id: &str,
+    payload: &ChatPayload,
+) -> Result<()> {
+    save_payload_attachments(data_dir, msg_id, payload)
+}
+
+pub fn media_caption_from_record(record: &MessageRecord) -> Option<String> {
+    let name = record.attachment_name.as_deref().unwrap_or("");
+    if record.body.is_empty() || record.body == name {
+        None
+    } else {
+        Some(record.body.clone())
+    }
+}
+
+pub fn media_edit_payload(record: &MessageRecord, caption: Option<&str>) -> Result<ChatPayload> {
+    match record.kind.as_str() {
+        "image" | "file" => {
+            let caption = caption
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            Ok(ChatPayload::File {
+                name: record
+                    .attachment_name
+                    .clone()
+                    .unwrap_or_else(|| "file".into()),
+                mime: record
+                    .attachment_mime
+                    .clone()
+                    .unwrap_or_else(|| "application/octet-stream".into()),
+                data: Vec::new(),
+                caption,
+                keep_attachment: true,
+            })
+        }
+        _ => bail!("only media messages support caption edits"),
     }
 }
 
@@ -277,6 +333,7 @@ mod tests {
             mime: "image/gif".into(),
             data: vec![1, 2, 3],
             caption: Some("hi".into()),
+            keep_attachment: false,
         };
         assert!(prefers_mailbox_delivery(&payload, 10));
         let text = ChatPayload::Text {

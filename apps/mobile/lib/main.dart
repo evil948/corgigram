@@ -550,6 +550,35 @@ class _MessageList extends StatelessWidget {
 
   final List<MessageDto> messages;
 
+  static const _deletedBody = 'Сообщение удалено';
+
+  Future<void> _showActions(BuildContext context, MessageDto m) async {
+    final out = m.direction == 'out';
+    final deleted = m.body == _deletedBody;
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (out && !deleted)
+              ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('Редактирование в мобильном приложении'),
+                subtitle: const Text('Пока доступно в desktop korki'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.visibility_off_outlined),
+              title: const Text('Скрыть у меня'),
+              subtitle: const Text('Скоро в мобильной версии'),
+              enabled: false,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
@@ -561,26 +590,36 @@ class _MessageList extends StatelessWidget {
         final pending = m.status == 'pending' ||
             m.status == 'queued_firebase' ||
             m.status == 'queued_local';
-        return Align(
-          alignment: out ? Alignment.centerRight : Alignment.centerLeft,
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-            decoration: BoxDecoration(
-              color: out ? AppTheme.bubbleOut : AppTheme.bubbleIn,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(m.body),
-                const SizedBox(height: 4),
-                Text(
-                  pending ? '⏳' : '',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                ),
-              ],
+        final deleted = m.body == _deletedBody;
+        return GestureDetector(
+          onLongPress: () => _showActions(context, m),
+          child: Align(
+            alignment: out ? Alignment.centerRight : Alignment.centerLeft,
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+              decoration: BoxDecoration(
+                color: out ? AppTheme.bubbleOut : AppTheme.bubbleIn,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    m.body,
+                    style: TextStyle(
+                      fontStyle: deleted ? FontStyle.italic : FontStyle.normal,
+                      color: deleted ? AppTheme.textSecondary : null,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    pending ? '⏳' : '',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                ],
+              ),
             ),
           ),
         );

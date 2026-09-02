@@ -486,6 +486,111 @@ async fn send_attachments(
 }
 
 #[tauri::command]
+async fn edit_message(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    contact_id: String,
+    message_id: String,
+    text: String,
+) -> Result<MessageRecord, String> {
+    let record = state
+        .app
+        .read()
+        .await
+        .edit_message(&contact_id, &message_id, &text)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("message-updated", &record);
+    Ok(record)
+}
+
+#[tauri::command]
+async fn delete_message(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    contact_id: String,
+    message_id: String,
+) -> Result<MessageRecord, String> {
+    let record = state
+        .app
+        .read()
+        .await
+        .delete_message(&contact_id, &message_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("message-deleted", &record);
+    Ok(record)
+}
+
+#[tauri::command]
+async fn hide_message_for_me(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    message_id: String,
+) -> Result<(), String> {
+    state
+        .app
+        .read()
+        .await
+        .hide_message_for_me(&message_id)
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(
+        "message-hidden",
+        serde_json::json!({ "id": message_id }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn edit_message_caption(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    contact_id: String,
+    message_id: String,
+    caption: Option<String>,
+) -> Result<MessageRecord, String> {
+    let record = state
+        .app
+        .read()
+        .await
+        .edit_message_caption(&contact_id, &message_id, caption.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("message-updated", &record);
+    Ok(record)
+}
+
+#[tauri::command]
+async fn replace_message_attachment(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    contact_id: String,
+    message_id: String,
+    attachment: AttachmentInput,
+) -> Result<MessageRecord, String> {
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&attachment.data_base64)
+        .map_err(|e| e.to_string())?;
+    let record = state
+        .app
+        .read()
+        .await
+        .replace_message_attachment(
+            &contact_id,
+            &message_id,
+            OutgoingAttachment {
+                name: attachment.name,
+                mime: attachment.mime,
+                data,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("message-updated", &record);
+    Ok(record)
+}
+
+#[tauri::command]
 async fn poll_messages(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<MessageRecord>, String> {
     let incoming = state
         .app
@@ -495,7 +600,7 @@ async fn poll_messages(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         .await
         .map_err(|e| e.to_string())?;
     for msg in &incoming {
-        let _ = app.emit("message-received", msg);
+        emit_inbound_message(&app, msg);
     }
     Ok(incoming)
 }
@@ -576,6 +681,9 @@ async fn maybe_native_notify(app: &tauri::AppHandle, shared: &SharedApp, msg: &M
     if msg.direction != "in" {
         return;
     }
+    if msg.edited_at.is_some() || msg.deleted_at.is_some() {
+        return;
+    }
     let focused = app
         .get_webview_window("main")
         .and_then(|w| w.is_focused().ok())
@@ -600,6 +708,16 @@ async fn maybe_native_notify(app: &tauri::AppHandle, shared: &SharedApp, msg: &M
         .unwrap_or(&msg.contact_id);
     let body = inbound_preview(msg);
     show_desktop_notification(app, title, &body);
+}
+
+fn emit_inbound_message(app: &tauri::AppHandle, msg: &MessageRecord) {
+    if msg.deleted_at.is_some() {
+        let _ = app.emit("message-deleted", msg);
+    } else if msg.edited_at.is_some() {
+        let _ = app.emit("message-updated", msg);
+    } else {
+        let _ = app.emit("message-received", msg);
+    }
 }
 
 fn show_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) {
@@ -661,6 +779,11 @@ pub fn run() {
             sync_mailbox,
             send_message,
             send_attachments,
+            edit_message,
+            delete_message,
+            hide_message_for_me,
+            edit_message_caption,
+            replace_message_attachment,
             poll_messages,
             save_config,
             update_profile,
@@ -719,7 +842,7 @@ pub fn run() {
                     };
                     sleep_ms = if connecting { 50 } else { 200 };
                     for msg in &messages {
-                        let _ = tick_handle.emit("message-received", msg);
+                        emit_inbound_message(&tick_handle, msg);
                         maybe_native_notify(&tick_handle, &tick_app, msg).await;
                     }
                     if !messages.is_empty() {

@@ -1,10 +1,12 @@
 mod chat_payload;
+mod message_envelope;
 
 use serde::{Deserialize, Serialize};
 
 use corgigram_crypto::{SessionAckMessage, SessionInitMessage};
 
 pub use chat_payload::{AttachmentItem, ChatPayload};
+pub use message_envelope::{ChatEnvelope, MessageOp};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WireMessage {

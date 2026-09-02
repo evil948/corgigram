@@ -165,12 +165,62 @@ pub struct CorgigramApp {
     cached_ice: Arc<AsyncMutex<Option<(IceConfig, DateTime<Utc>)>>>,
 }
 
+fn push_data_dir_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !candidates.iter().any(|existing| existing == &path) {
+        candidates.push(path);
+    }
+}
+
+fn resolve_data_dir() -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Some(xdg) = dirs::data_dir() {
+        push_data_dir_candidate(&mut candidates, xdg.join("corgigram"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        push_data_dir_candidate(&mut candidates, home.join(".local/share/corgigram"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        push_data_dir_candidate(&mut candidates, cwd.join("corgigram"));
+    }
+
+    for dir in &candidates {
+        if dir.join("identity.json").exists() {
+            eprintln!("corgigram: data dir {} (identity.json)", dir.display());
+            return dir.clone();
+        }
+    }
+    for dir in &candidates {
+        if dir.join("corgigram.db").exists() {
+            eprintln!("corgigram: data dir {} (corgigram.db)", dir.display());
+            return dir.clone();
+        }
+    }
+
+    let default = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("corgigram");
+    eprintln!("corgigram: data dir {} (default)", default.display());
+    default
+}
+
+fn read_identity_user_id(path: &std::path::Path) -> Option<String> {
+    let json = std::fs::read_to_string(path).ok()?;
+    #[derive(Deserialize)]
+    struct PartialIdentity {
+        public: PartialPublic,
+    }
+    #[derive(Deserialize)]
+    struct PartialPublic {
+        user_id: String,
+    }
+    serde_json::from_str::<PartialIdentity>(&json)
+        .ok()
+        .map(|partial| partial.public.user_id)
+}
+
 impl CorgigramApp {
     pub fn open_default() -> Result<Self> {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("corgigram");
-        Self::open(data_dir)
+        Self::open(resolve_data_dir())
     }
 
     pub fn open(data_dir: PathBuf) -> Result<Self> {
@@ -572,11 +622,17 @@ impl CorgigramApp {
 
     pub fn profile_status(&self) -> ProfileStatus {
         let path = self.data_dir.join("identity.json");
+        let identity_on_disk = path.exists();
+        let user_id = self
+            .identity
+            .as_ref()
+            .map(|id| id.public.user_id.clone())
+            .or_else(|| identity_on_disk.then(|| read_identity_user_id(&path)).flatten());
         ProfileStatus {
             data_dir: self.data_dir.display().to_string(),
             identity_loaded: self.identity.is_some(),
-            identity_on_disk: path.exists(),
-            user_id: self.identity.as_ref().map(|id| id.public.user_id.clone()),
+            identity_on_disk,
+            user_id,
         }
     }
 
@@ -2327,9 +2383,19 @@ impl CorgigramApp {
 
     fn load_identity(&mut self) -> Result<()> {
         let path = self.data_dir.join("identity.json");
-        if path.exists() {
-            let json = std::fs::read_to_string(path)?;
-            self.identity = Some(Identity::load_json(&json)?);
+        if !path.exists() {
+            return Ok(());
+        }
+        let json = match std::fs::read_to_string(&path) {
+            Ok(json) => json,
+            Err(error) => {
+                eprintln!("corgigram: read identity.json failed: {error:#}");
+                return Ok(());
+            }
+        };
+        match Identity::load_json(&json) {
+            Ok(identity) => self.identity = Some(identity),
+            Err(error) => eprintln!("corgigram: parse identity.json failed: {error}"),
         }
         Ok(())
     }

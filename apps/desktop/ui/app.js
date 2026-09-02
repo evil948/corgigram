@@ -344,38 +344,44 @@ async function refresh() {
 async function showOnboardingForNewProfile() {
   show($("onboarding"));
   hide($("app"));
+  show($("btn-restore-identity"));
   try {
     const status = await invoke("get_profile_status");
-    const restoreBtn = $("btn-restore-identity");
-    if (status?.identity_on_disk ?? status?.identityOnDisk) {
-      show(restoreBtn);
+    const onDisk = status?.identity_on_disk ?? status?.identityOnDisk;
+    const loaded = status?.identity_loaded ?? status?.identityLoaded;
+    if (onDisk) {
       const uid = status?.user_id ?? status?.userId;
       $("onboard-error").textContent = uid
-        ? `Найден сохранённый профиль @${uid}. Нажмите «Войти в существующий профиль».`
-        : "Найден сохранённый профиль на этом устройстве.";
+        ? `Найден сохранённый профиль @${uid}. Вход…`
+        : "Найден сохранённый профиль на этом устройстве. Вход…";
       show($("onboard-error"));
+      if (!loaded) {
+        await restoreExistingProfile();
+      }
     } else {
-      hide(restoreBtn);
       hide($("onboard-error"));
     }
-  } catch {
-    hide($("btn-restore-identity"));
+  } catch (error) {
+    console.warn("get_profile_status failed:", error);
   }
 }
 
 async function showProfileRecovery(err) {
   show($("onboarding"));
   hide($("app"));
+  show($("btn-restore-identity"));
   const errEl = $("onboard-error");
-  errEl.textContent = `Не удалось загрузить приложение: ${err}. Попробуйте войти в существующий профиль.`;
+  errEl.textContent = `Не удалось загрузить приложение: ${err}. Пробуем войти в существующий профиль…`;
   show(errEl);
   try {
     const status = await invoke("get_profile_status");
-    if (status?.identity_on_disk ?? status?.identityOnDisk) {
-      show($("btn-restore-identity"));
+    const onDisk = status?.identity_on_disk ?? status?.identityOnDisk;
+    const loaded = status?.identity_loaded ?? status?.identityLoaded;
+    if (onDisk && !loaded) {
+      await restoreExistingProfile();
     }
-  } catch {
-    hide($("btn-restore-identity"));
+  } catch (error) {
+    console.warn("get_profile_status failed:", error);
   }
 }
 
